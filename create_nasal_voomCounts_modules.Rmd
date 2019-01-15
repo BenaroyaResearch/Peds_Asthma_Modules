@@ -134,7 +134,7 @@ totalCountsSub<-totalCounts[keepIndex]
 
 dim(countSub) # 142 samples went into phase 2 filtering
 
-table(colnames(countSub) %in% nDesign$title) # 22 of these libraries are not in the GEO submission currently (120 are)
+table(colnames(countSub) %in% nDesign$title) # 22 of these libraries need to be added to the initial GEO submission
 table(nDesign$Characteristics..Flowcell[match(designSub$library.sampleId, nDesign$title)]) # 120 libraries come from flow cell AC95GDANXX
 
 d2<-DGEList(counts=countSub)
@@ -183,8 +183,6 @@ corfit$consensus.correlation	# 0.2562075
 newNasalVoom1<-voomWithQualityWeights(curDGENasal1, curMM, plot=TRUE, block=nDesignSub1$Patient.ID, correlation=corfit$consensus)
 
 ### PHASE 2
-# this is where I'm not getting identical results
-# the counts are identical, but the norm factors aren't the same in the DGE object - why?
 # make sure we have factors set up correctly
 nDesignSub2<-designSub
 nDesignSub2$Visit<-as.character(nDesignSub2$Visit..)
@@ -226,10 +224,10 @@ modNDesign<-nDesignSub
 all(colnames(modNasalVoom)==modNDesign$title)
 
 # need to write out this information
-phase1libs<-colnames(newNasalVoom1)
-phase2libs<-colnames(newNasalVoom2)
-libsUsedInModuleConstruction<-colnames(modNasalVoom)
-libsList<-list(phase1libs=phase1libs, phase2libs=phase2libs, libsUsedInModuleConstruction=libsUsedInModuleConstruction)
+#phase1libs<-colnames(newNasalVoom1)
+#phase2libs<-colnames(newNasalVoom2)
+#libsUsedInModuleConstruction<-colnames(modNasalVoom)
+#libsList<-list(phase1libs=phase1libs, phase2libs=phase2libs, libsUsedInModuleConstruction=libsUsedInModuleConstruction)
 # write out to file
 #save(libsList, list="libsList", file="results/libsList.Rdata")
 
@@ -344,10 +342,10 @@ nasalDesign<-read.csv(file=file.path(dataDir, "newNasalDesign.csv"))
 all(as.character(nasalDesign$library.sampleId)==as.character(modNDesign$title))
 neutOrig<-nasalDesign$Neutrophil * (nasalDesign$WBC / 100)
 # these need to be set to NA
-which(is.na(neutOrig))[!(which(is.na(neutOrig)) %in% which(is.na(neut)))] # 92  93 130 131 137 145 146 - TO DO: change hard coding index to match by library ID - DONE
+which(is.na(neutOrig))[!(which(is.na(neutOrig)) %in% which(is.na(neut)))]
 neut[which(modNDesign$title %in% c("lib12437", "lib12438", "lib12502", "lib12503", "lib12524", "lib12535", "lib12536"))]<-NA
 # these NAs need to be converted to numbers
-which(is.na(neut))[!(which(is.na(neut)) %in% which(is.na(neutOrig)))] # 13  48  81 102
+which(is.na(neut))[!(which(is.na(neut)) %in% which(is.na(neutOrig)))]
 setToNumberIndex<-which(modNDesign$title %in% c("lib11094", "lib12366", "lib12416", "lib12456")) # these are all visit 1b
 for (i in 1:length(setToNumberIndex))
 {
@@ -358,10 +356,10 @@ for (i in 1:length(setToNumberIndex))
 }
 
 lympOrig<-nasalDesign$Lymphocyte * (nasalDesign$WBC / 100)
-which(is.na(lympOrig))[!(which(is.na(lympOrig)) %in% which(is.na(lymp)))] # 92  93 130 131 137 145 146
+which(is.na(lympOrig))[!(which(is.na(lympOrig)) %in% which(is.na(lymp)))]
 lymp[which(modNDesign$title %in% c("lib12437", "lib12438", "lib12502", "lib12503", "lib12524", "lib12535", "lib12536"))]<-NA
 # these NAs need to be converted to numbers
-which(is.na(lymp))[!(which(is.na(lymp)) %in% which(is.na(lympOrig)))] # 13  48  81 102
+which(is.na(lymp))[!(which(is.na(lymp)) %in% which(is.na(lympOrig)))]
 setToNumberIndex<-which(modNDesign$title %in% c("lib11094", "lib12366", "lib12416", "lib12456")) # these are all visit 1b
 for (i in 1:length(setToNumberIndex))
 {
@@ -372,10 +370,10 @@ for (i in 1:length(setToNumberIndex))
 }
 
 eosOrig<-nasalDesign$Eosinophil * (nasalDesign$WBC / 100)
-which(is.na(eosOrig))[!(which(is.na(eosOrig)) %in% which(is.na(eos)))] # 92  93 130 131 137 145 146
+which(is.na(eosOrig))[!(which(is.na(eosOrig)) %in% which(is.na(eos)))]
 eos[which(modNDesign$title %in% c("lib12437", "lib12438", "lib12502", "lib12503", "lib12524", "lib12535", "lib12536"))]<-NA
 # these NAs need to be converted to numbers
-which(is.na(eos))[!(which(is.na(eos)) %in% which(is.na(eosOrig)))] # 13  48  81 102
+which(is.na(eos))[!(which(is.na(eos)) %in% which(is.na(eosOrig)))]
 setToNumberIndex<-which(modNDesign$title %in% c("lib11094", "lib12366", "lib12416", "lib12456")) # these are all visit 1b
 for (i in 1:length(setToNumberIndex))
 {
@@ -386,10 +384,10 @@ for (i in 1:length(setToNumberIndex))
 }
 
 macOrig<-nasalDesign$Macrophage * (nasalDesign$WBC / 100)
-which(is.na(macOrig))[!(which(is.na(macOrig)) %in% which(is.na(mac)))] # 92  93 130 131 137 145 146
+which(is.na(macOrig))[!(which(is.na(macOrig)) %in% which(is.na(mac)))]
 mac[which(modNDesign$title %in% c("lib12437", "lib12438", "lib12502", "lib12503", "lib12524", "lib12535", "lib12536"))]<-NA
 # these NAs need to be converted to numbers
-which(is.na(mac))[!(which(is.na(mac)) %in% which(is.na(macOrig)))] # 13  48  81 102
+which(is.na(mac))[!(which(is.na(mac)) %in% which(is.na(macOrig)))]
 setToNumberIndex<-which(modNDesign$title %in% c("lib11094", "lib12366", "lib12416", "lib12456")) # these are all visit 1b
 for (i in 1:length(setToNumberIndex))
 {
@@ -400,10 +398,10 @@ for (i in 1:length(setToNumberIndex))
 }
 
 epiOrig<-nasalDesign$Epithelial
-which(is.na(epiOrig))[!(which(is.na(epiOrig)) %in% which(is.na(epi)))] # DIFFERENT! 92  93 145 146
+which(is.na(epiOrig))[!(which(is.na(epiOrig)) %in% which(is.na(epi)))]
 epi[which(modNDesign$title %in% c("lib12437", "lib12438", "lib12535", "lib12536"))]<-NA
 # these NAs need to be converted to numbers
-which(is.na(epi))[!(which(is.na(epi)) %in% which(is.na(epiOrig)))] # DIFFERENT! 13  38  48  81  84 102 (new are: 38, 84)
+which(is.na(epi))[!(which(is.na(epi)) %in% which(is.na(epiOrig)))]
 setToNumberIndex<-which(modNDesign$title %in% c("lib11094", "lib11122", "lib12366", "lib12416", "lib12428", "lib12456")) # these are all visit 1b
 for (i in 1:length(setToNumberIndex))
 {
@@ -414,10 +412,10 @@ for (i in 1:length(setToNumberIndex))
 }
 
 squaOrig<-nasalDesign$Squamous
-which(is.na(squaOrig))[!(which(is.na(squaOrig)) %in% which(is.na(squa)))] # DIFFERENT! 92  93 145 146
+which(is.na(squaOrig))[!(which(is.na(squaOrig)) %in% which(is.na(squa)))]
 squa[which(modNDesign$title %in% c("lib12437", "lib12438", "lib12535", "lib12536"))]<-NA
 # these NAs need to be converted to numbers
-which(is.na(squa))[!(which(is.na(squa)) %in% which(is.na(squaOrig)))] # DIFFERENT! 13  38  48  81  84 102 (new are: 38, 84)
+which(is.na(squa))[!(which(is.na(squa)) %in% which(is.na(squaOrig)))]
 setToNumberIndex<-which(modNDesign$title %in% c("lib11094", "lib11122", "lib12366", "lib12416", "lib12428", "lib12456")) # these are all visit 1b
 for (i in 1:length(setToNumberIndex))
 {
@@ -528,7 +526,8 @@ sft<-pickSoftThreshold(t(setVoom$E), powerVector=powers, verbose=5)
 # plot the results
 par(mfrow=c(1,2))
 # scale-free topology fit index as a function of the soft-thresholding power
-plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], xlab="Soft Threshold (power)", ylab="Scale Free Topology Model Fit,signed R^2", type="n", main=paste("Scale independence"))
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], xlab="Soft Threshold (power)", ylab="Scale Free Topology Model Fit,signed R^2",
+     type="n", main=paste("Scale independence"))
 text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], labels=powers, col="red")
 # this line corresponds to using a R^2 cutoff of h
 abline(h=0.9, col="red")
@@ -543,7 +542,8 @@ createWGCNA<-function(cellGenes, allNasalVoom, curPower)
 	setVoom<-setVoom[order(rownames(setVoom)),]
 	
 	time1<-Sys.time()
-	voomNetNasal<-blockwiseModules(t(setVoom$E), power=curPower, networkType="signed", TOMType="signed", minModuleSize=30, maxBlockSize=6000, saveTOMS=TRUE, saveTOMFileBase = "test", deepSplit=4, numericLabels=TRUE, minCoreKME=0.7, minKMEtoStay=0.5)
+	voomNetNasal<-blockwiseModules(t(setVoom$E), power=curPower, networkType="signed", TOMType="signed", minModuleSize=30, maxBlockSize=6000,
+	                               saveTOMS=TRUE, saveTOMFileBase = "test", deepSplit=4, numericLabels=TRUE, minCoreKME=0.7, minKMEtoStay=0.5)
 	time2<-Sys.time()
 	print(time2-time1)	# 10 sec, 7 sec, 4 sec, 5 sec, 3 sec, 7 sec, 42 sec
 	return(voomNetNasal)
