@@ -36,8 +36,8 @@ library(WGCNA)
 
 ```{r readData}
 
-dataDir <- "data"
-resultsDir <- "results"
+dataDir <- "../data"
+resultsDir <- "../results"
 
 # read in raw counts - this is the GEO submission
 nCountData<-read.delim(file=file.path(dataDir, "raw_counts_nasal_muppits420.txt"), sep=",", row.names=1)

@@ -21,7 +21,7 @@ The modules described in the paper came from data collected on two different bio
 
 #### Nasal Modules
 
-To create the nasal modules, "run" the chunks in the file create_nasal_voomCounts_modules.Rmd from within RStudio
+To create the nasal modules, "run" the chunks in the file create_nasal_voomCounts_modules.Rmd in the modules folder from within RStudio
 
 The output should be several files in the results directory that assign or associate genes to specific groups, or modules, corresponding to the modules of the paper.
 
