@@ -1,0 +1,569 @@
+---
+title: "MUPPITS-1 Creation of Blood Modules"
+author: "Elizabeth Whalen"
+date: "2/28/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Optionally install, and load required libraries
+
+```{r loadLibraries}
+
+# Determine missing Bioconductor packages and install
+BioCPackages <- c("edgeR", "biomaRt")
+new.packages <- BioCPackages[!(BioCPackages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) {
+  source("http://bioconductor.org/biocLite.R")
+  biocLite(new.packages)
+}
+ 
+# Determine missing CRAN Packages and install
+CRANPackages <- c("WGCNA")
+new.packages <- CRANPackages[!(CRANPackages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) {
+  install.packages(new.packages)
+}
+
+# Load libraries....
+library(edgeR)
+library(biomaRt)
+library(WGCNA)
+```
+
+## Read in phase 1 data and create voom counts
+
+```{r phase1}
+
+
+dataDir <- "../data"
+testDir <- "../test"
+resultsDir <- "../results"
+
+###### read in full design
+fullTdesign<-read.csv(file=file.path(dataDir, "full_tempus_design.csv"))
+fullTdesign$Visit[which(fullTdesign$Visit=="Visit 0 - Screening and Enrollment")]<-"Visit 0"
+
+######
+# phase 1 tempus data
+######
+# read in counts
+countsTP1<-read.csv(file=file.path(dataDir, "P90-18_C8B30ANXX_160407_combined_counts.csv"), row.names=1)
+dim(countsTP1)
+colnames(countsTP1)<-unlist(lapply(strsplit(colnames(countsTP1), "_"), function(x) {x[1]}))
+
+# read in new design file 
+designTP1<-fullTdesign[which(fullTdesign$Phase=="1"),]
+
+all(colnames(countsTP1) == designTP1$Library.ID) # TRUE
+
+failedQClibs<-c("lib11339")
+tempusCountsP1<-countsTP1[,-match(failedQClibs, colnames(countsTP1))]
+tempusDesignP1<-designTP1[-match(failedQClibs, colnames(countsTP1)),]
+
+# both are TRUE
+all(tempusDesignP1$library.sampleId==colnames(tempusCountsP1))
+
+#####
+# make voom counts
+######
+library(edgeR)
+d1<-DGEList(counts=tempusCountsP1)
+d1<-calcNormFactors(d1)
+
+keepRows1<-rowSums(round(cpm(d1$counts)) >= 1) >= 0.1*ncol(tempusCountsP1)
+table(keepRows1)	# removes 45,091 rows
+
+curDGETempusP1<-d1[keepRows1,]	# now have 19,162 rows
+curDGETempusP1<-calcNormFactors(curDGETempusP1)
+
+library(biomaRt)
+
+# now filter based on protein coding
+mart = useMart(host='oct2016.archive.ensembl.org', biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl")
+resultsBio1<-getBM(attributes=c("ensembl_gene_id", "hgnc_symbol","gene_biotype"), filters="ensembl_gene_id", values=rownames(curDGETempusP1), mart=mart)
+resultsBioProtein1<-resultsBio1[which(resultsBio1$gene_biotype=="protein_coding"),]
+
+keepIndex1<-which(rownames(curDGETempusP1) %in% resultsBioProtein1$ensembl_gene_id)
+
+curDGETempusP1<-curDGETempusP1[keepIndex1,]
+dim(curDGETempusP1)	# 13,486
+curDGETempusP1<-calcNormFactors(curDGETempusP1)
+
+# make sure we have factors set up correctly
+tempusDesignP1$Visit<-factor(as.character(tempusDesignP1$Visit), levels=c("Visit 0","Visit 1a","Visit 1b"))
+
+curMM<-model.matrix(~Visit, data=tempusDesignP1)
+tempusVoomP1<-voomWithQualityWeights(curDGETempusP1, curMM, plot=TRUE)
+
+# now need to take into account duplicate correlation
+tempusDesignP1$Patient.ID<-as.factor(as.character(tempusDesignP1$Patient.ID))
+corfitP1<-duplicateCorrelation(tempusVoomP1, curMM, block=tempusDesignP1$Patient.ID)
+corfitP1$consensus.correlation	# 0.4336816
+
+tVoom1<-voomWithQualityWeights(curDGETempusP1, curMM, plot=TRUE, block=tempusDesignP1$Patient.ID, correlation=corfitP1$consensus)
+
+```
+
+## Read in phase 2 data and create voom counts
+
+```{r phase2}
+
+#####
+# phase 2 tempus data
+#####
+# read in counts
+countsP2<-read.csv(file=file.path(dataDir, "P90-2_C97JMANXX_160823_combined_counts.csv"), row.names=1)
+countsP2<- countsP2[order(rownames(countsP2)),]
+sort(apply(countsP2, 2, sum)/1E6)
+
+designP2<-fullTdesign[which(fullTdesign$Phase=="2"),]
+
+newCN<-colnames(countsP2)
+newCN<-unlist(lapply(strsplit(newCN, "_"), function(x) {x[1]}))
+colnames(countsP2)<-newCN
+
+# now check the order - yes, all match
+all(designP2$Library.ID==colnames(countsP2))
+
+totalCountsP2<-apply(countsP2, 2, sum)
+sum(totalCountsP2 < 1E6) # 1 (lib12952)
+
+remLib<-names(which(totalCountsP2/1E6 < 1))
+designP2Sub<-designP2[-match(remLib, designP2$Library.ID),]
+countsP2Sub<-countsP2[,-match(remLib, designP2$Library.ID),]
+totalCountsP2Sub<-totalCountsP2[-match(remLib, designP2$Library.ID)]
+
+all(designP2Sub$Library.ID==colnames(countsP2Sub))
+
+#####
+# make voom counts
+######
+d2<-DGEList(counts=countsP2Sub)
+d2<-calcNormFactors(d2)
+
+# filter genes/rows
+keepRows2<-rowSums(round(cpm(d2$counts)) >= 1) >= 0.1*ncol(countsP2Sub)
+table(keepRows2)		# removes 45,341 rows
+
+curDGE2<-d2[keepRows2,]	# now have 18,912 rows
+
+# now filter based on protein coding
+library(biomaRt)
+mart2 = useMart(host='may2017.archive.ensembl.org', biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl")
+resultsBio2<-getBM(attributes=c("ensembl_gene_id", "hgnc_symbol","gene_biotype"), filters="ensembl_gene_id", values=rownames(curDGE2), mart=mart2)
+resultsBioProtein2<-resultsBio2[which(resultsBio2$gene_biotype=="protein_coding"),]
+
+# use the original way
+keepGeneIDs2<-as.character(resultsBio2$ensembl_gene_id[which(resultsBio2$gene_biotype=="protein_coding")])
+matchIndex2<-match(keepGeneIDs2, rownames(curDGE2))
+
+curDGE2sub<-curDGE2[matchIndex2,]
+dim(curDGE2sub)  # now have 13,460 rows
+
+designP2Sub$VisitNew<-as.character(designP2Sub$Visit)
+designP2Sub$VisitNew[which(designP2Sub$VisitNew %in% c("Visit 1a","Visit 2a"))]<-"Visit A"
+designP2Sub$VisitNew[which(designP2Sub$VisitNew %in% c("Visit 1b","Visit 2b"))]<-"Visit B"
+designP2Sub$VisitNew[which(designP2Sub$VisitNew=="Visit 0")]<-"Visit 0"
+table(designP2Sub$VisitNew)
+designP2Sub$VisitNew<-factor(designP2Sub$VisitNew, levels=c("Visit 0","Visit A","Visit B"))
+
+curMM2<-model.matrix(~VisitNew, data=designP2Sub)
+curMM2[1:3,]
+tempusVoomI<-voomWithQualityWeights(curDGE2sub, curMM2, plot=TRUE)
+
+# now take into account correlation from samples from the same person
+corfit2<-duplicateCorrelation(tempusVoomI, curMM2, block=designP2Sub$Patient.ID)
+corfit2$consensus 	# 0.3996951 
+
+tVoom2<-voomWithQualityWeights(curDGE2sub, curMM2, plot=TRUE, block=designP2Sub$Patient.ID, correlation=corfit2$consensus)
+
+```
+
+## Read in phase 3 data and create voom counts
+
+```{r phase3}
+
+#####
+# phase 3 tempus data
+#####
+tempusCounts3<-read.csv(file=file.path(dataDir, "P90-22_CAJMRANXX_170322_combined_counts.csv"), row.names=1)
+dim(tempusCounts3)
+# change the column names
+colnames(tempusCounts3)<-unlist(lapply(strsplit(colnames(tempusCounts3), "_"), function(x) {x[1]}))
+
+tempusDesign3<-fullTdesign[which(fullTdesign$Phase=="3"),]
+all(colnames(tempusCounts3) == tempusDesign3$Library.ID)
+
+tempusTotalCounts3<-apply(tempusCounts3, 2, sum)
+
+remIndex3<-which(tempusDesign3$medianCV > 0.9 | tempusDesign3$percentAligned < 0.8)
+
+tempusCounts3Sub<-tempusCounts3[,-remIndex3]
+tempusDesign3Sub<-tempusDesign3[-remIndex3,]
+tempusTotalCounts3Sub<-tempusTotalCounts3[-remIndex3]
+all(tempusDesign3Sub$Lib.ID==colnames(tempusCounts3Sub))
+tempusDesign3Sub$libSize<-tempusTotalCounts3Sub/1E6
+
+#####
+# make voom counts
+######
+d3<-DGEList(counts=tempusCounts3Sub)
+d3<-calcNormFactors(d3)
+
+keepRows3<-rowSums(round(cpm(d3$counts)) >= 1) >= 0.1*ncol(tempusCounts3Sub)
+table(keepRows3)	# removes 44,954 rows
+
+curDGE3<-d3[keepRows3,]	# now have 19,299 rows
+
+library(biomaRt)
+mart3 = useMart(host='mar2017.archive.ensembl.org', biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl")
+resultsBio3<-getBM(attributes=c("ensembl_gene_id", "hgnc_symbol","gene_biotype"), filters="ensembl_gene_id", values=rownames(curDGE3), mart=mart3)
+resultsBioProtein3<-resultsBio3[which(resultsBio3$gene_biotype=="protein_coding"),]
+
+keepGeneIDs3<-as.character(resultsBio3$ensembl_gene_id[which(resultsBio3$gene_biotype=="protein_coding")])
+# there is one duplicate
+keepGeneIDs3<-unique(keepGeneIDs3)
+matchIndex3<-match(keepGeneIDs3, rownames(curDGE3))
+
+curDGE3sub<-curDGE3[matchIndex3,]
+dim(curDGE3sub)  # now have 13,564 rows
+
+# set up variables
+tempusDesign3Sub$VisitNew<-as.character(tempusDesign3Sub$Visit)
+tempusDesign3Sub$VisitNew[which(tempusDesign3Sub$VisitNew %in% c("Visit 1a","Visit 2a"))]<-"Visit A"
+tempusDesign3Sub$VisitNew[which(tempusDesign3Sub$VisitNew %in% c("Visit 1b","Visit 2b"))]<-"Visit B"
+tempusDesign3Sub$VisitNew<-factor(as.character(tempusDesign3Sub$VisitNew), levels=c("Visit 0","Visit A","Visit B"))
+
+# now run without lane in model
+curMM3<-model.matrix(~VisitNew, data=tempusDesign3Sub)
+curMM3[1:3,]
+tempusVoomF<-voomWithQualityWeights(curDGE3sub, curMM3, plot=TRUE)
+
+# now need to take into account duplicate correlation
+tempusDesign3Sub$Pt.ID<-as.factor(as.character(tempusDesign3Sub$Patient.ID))
+corfit3<-duplicateCorrelation(tempusVoomF, curMM3, block=tempusDesign3Sub$Patient.ID)
+corfit3$consensus.correlation	# 0.4445274 
+
+tVoom3<-voomWithQualityWeights(curDGE3sub, curMM3, plot=TRUE, block=tempusDesign3Sub$Patient.ID, correlation=corfit3$consensus)
+
+```
+
+## Read in phase 4 data and create voom counts
+
+```{r phase4}
+
+#####
+# phase 4 tempus data
+#####
+tempusCounts4<-read.csv(file=file.path(dataDir, "combinedTempusCounts.csv"), row.names=1)
+tempusDesign4<-fullTdesign[which(fullTdesign$Phase=="4"),]
+
+all(colnames(tempusCounts4)==tempusDesign4$Library.ID)
+
+tempusTotalCounts4<-apply(tempusCounts4, 2, sum)/1E6
+tempusDesign4$TotalCounts<-tempusTotalCounts4
+
+# removes 7 libraries: lib16429 lib16657 lib16549 lib16551 lib16553 lib16550 lib16596
+tempusCounts4Sub<-tempusCounts4[,-which(tempusDesign4$TotalCounts < 1)]
+tempusDesign4Sub<-tempusDesign4[-which(tempusDesign4$TotalCounts < 1),]
+
+#####
+# make voom counts
+######
+d4<-DGEList(counts=tempusCounts4Sub)
+d4<-calcNormFactors(d4)
+
+keepRows4<-rowSums(round(cpm(d4$counts)) >= 1) >= 0.1*ncol(tempusCounts4Sub)
+table(keepRows4) # removes 44,960 rows
+
+curDGE4<-d4[keepRows4,]	# now have 19,293 rows
+
+library(biomaRt)
+mart4 = useMart(host='may2017.archive.ensembl.org', biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl")
+resultsBio4<-getBM(attributes=c("ensembl_gene_id", "hgnc_symbol","gene_biotype"), filters="ensembl_gene_id", values=rownames(curDGE4), mart=mart4)
+resultsBioProtein4<-resultsBio4[which(resultsBio4$gene_biotype=="protein_coding"),]
+
+keepGeneIDs4<-as.character(resultsBio4$ensembl_gene_id[which(resultsBio4$gene_biotype=="protein_coding")])
+matchIndex4<-match(keepGeneIDs4, rownames(curDGE4))
+
+curDGE4sub<-curDGE4[matchIndex4,]
+dim(curDGE4sub)  # now have 13,571 rows
+
+tempusDesign4Sub$VisitNew<-as.character(tempusDesign4Sub$Visit)
+tempusDesign4Sub$VisitNew[which(tempusDesign4Sub$VisitNew %in% c("Visit 1a","Visit 2a"))]<-"Visit A"
+tempusDesign4Sub$VisitNew[which(tempusDesign4Sub$VisitNew %in% c("Visit 1b","Visit 2b"))]<-"Visit B"
+tempusDesign4Sub$VisitNew<-factor(as.character(tempusDesign4Sub$VisitNew), levels=c("Visit 0","Visit A","Visit B"))
+
+# remove 4 more libraries with high median CV coverage (> 0.85): lib16525 lib16570 lib16571 lib16668
+tempusDesign4Sub2<-tempusDesign4Sub[-which(tempusDesign4Sub$medianCV > 0.85),]
+curDGE4sub2<-curDGE4sub[,-which(tempusDesign4Sub$medianCV > 0.85)]
+all(tempusDesign4Sub2$Library.ID==colnames(curDGE4sub2))
+
+# this takes a long time - nearly an hour
+curMM4<-model.matrix(~VisitNew, data=tempusDesign4Sub2)
+curMM4[1:3,]
+tempusVoomL<-voomWithQualityWeights(curDGE4sub2, curMM4, plot=TRUE)
+
+# now need to take into account duplicate correlation
+tempusDesign4Sub2$Patient.ID<-as.factor(as.character(tempusDesign4Sub2$Patient.ID))
+corfit4<-duplicateCorrelation(tempusVoomL, curMM4, block=tempusDesign4Sub2$Patient.ID)
+corfit4$consensus.correlation	# 0.399683
+
+tVoom4<-voomWithQualityWeights(curDGE4sub2, curMM4, plot=TRUE, block=tempusDesign4Sub2$Patient.ID, correlation=corfit4$consensus)
+
+```
+
+## Combine and create set for module creation
+
+```{r combineVoom}
+
+allRN<-c(rownames(tVoom1), rownames(tVoom2), rownames(tVoom3), rownames(tVoom4))
+keepIDs<-names(which(table(allRN)==4))
+length(keepIDs) # 13316
+
+tVoom1sub<-tVoom1[which(rownames(tVoom1) %in% keepIDs),]
+tVoom2sub<-tVoom2[which(rownames(tVoom2) %in% keepIDs),]
+tVoom3sub<-tVoom3[which(rownames(tVoom3) %in% keepIDs),]
+tVoom4sub<-tVoom4[which(rownames(tVoom4) %in% keepIDs),]
+
+all(rownames(tVoom1sub)==rownames(tVoom2sub))
+all(rownames(tVoom1sub)==rownames(tVoom3sub))
+all(rownames(tVoom1sub)==rownames(tVoom4sub))
+
+allTvoom<-cbind(tVoom1sub, tVoom2sub, tVoom3sub, tVoom4sub)
+
+
+# use this for the set that are used to create the gene set expression
+tDesignNoReps<-fullTdesign[which(fullTdesign$InFullAnalysis=="Yes"),]
+
+# first subset to no reps
+tVoomNoReps<-allTvoom[, which(colnames(allTvoom) %in% tDesignNoReps$Library.ID)]
+all(colnames(tVoomNoReps)==tDesignNoReps$LibraryID)
+
+# subset to libraries used to create modules
+keepIndex<-which(tDesignNoReps$Library.ID %in% fullTdesign$Library.ID[which(fullTdesign$InModuleCreation=="Yes")])
+
+tDesign2<-tDesignNoReps[keepIndex,]
+tVoom2<-tVoomNoReps[,keepIndex]
+all(tDesign2$LibraryID==colnames(tVoom2))
+dim(tDesign2)
+
+# still need the full set of info for cell counts
+allSampleInfo<-read.csv(file=file.path(dataDir, "MUPPITS_All_Data_From_Rho.csv"))
+
+keepIndex<-c()
+keepLibIDs<-c()
+for (i in 1:nrow(tDesign2))
+{
+  curPt<-as.character(tDesign2$Patient.ID[i])
+  curVisit<-as.character(tDesign2$Visit[i])
+  matchIndex<-which(curPt==allSampleInfo$Subject.Identifier.for.the.Study & curVisit==allSampleInfo$Analysis.Visit)
+  if (length(matchIndex)==1)
+  {
+    keepIndex<-c(keepIndex, matchIndex)
+    keepLibIDs<-c(keepLibIDs, as.character(tDesign2$Library.ID[i]))
+  }
+}
+
+tDesign2orig<-tDesign2
+tDesign2<-allSampleInfo[keepIndex,]
+tDesign2$Library.ID<-keepLibIDs
+all(tDesign2$Library.ID==colnames(tVoom2))
+
+```
+
+## Create Tempus Modules
+
+```{r createMods}
+
+neutCor<-c()
+neutCorP<-c()
+lympCor<-c()
+lympCorP<-c()
+eosCor<-c()
+eosCorP<-c()
+monoCor<-c()
+monoCorP<-c()
+basoCor<-c()
+basoCorP<-c()
+
+for (i in 1:nrow(tVoom2))
+{
+	curTest<-cor.test(tDesign2$Blood.Neutrophil.Differential, tVoom2$E[i,], use="pairwise.complete.obs")
+	neutCor<-c(neutCor, curTest$estimate)
+	neutCorP<-c(neutCorP, curTest$p.value)
+
+	curTest<-cor.test(tDesign2$Blood.Lymphocyte.Differential, tVoom2$E[i,], use="pairwise.complete.obs")
+	lympCor<-c(lympCor, curTest$estimate)
+	lympCorP<-c(lympCorP, curTest$p.value)
+
+	curTest<-cor.test(tDesign2$Blood.Eosinophil.Differential, tVoom2$E[i,], use="pairwise.complete.obs")
+	eosCor<-c(eosCor, curTest$estimate)
+	eosCorP<-c(eosCorP, curTest$p.value)
+	
+	curTest<-cor.test(tDesign2$Blood.Monocyte.Differential, tVoom2$E[i,], use="pairwise.complete.obs")
+	monoCor<-c(monoCor, curTest$estimate)
+	monoCorP<-c(monoCorP, curTest$p.value)
+
+	curTest<-cor.test(tDesign2$Blood.Basophil.Differential, tVoom2$E[i,], use="pairwise.complete.obs")
+	basoCor<-c(basoCor, curTest$estimate)
+	basoCorP<-c(basoCorP, curTest$p.value)
+}
+
+# now bind together and see how many genes are assigned to cell types
+allCor<-cbind(neutCor, lympCor, eosCor, monoCor, basoCor)
+allCorP<-cbind(neutCorP, lympCorP, eosCorP, monoCorP, basoCorP)
+
+rownames(allCor)<-rownames(tVoom2)
+rownames(allCorP)<-rownames(tVoom2)
+
+# run multiple testing correlation
+apply(allCorP, 2, function(x) {sum(x < 0.05)})
+allFDR<-apply(allCorP, 2, function(x) {p.adjust(x)})
+apply(allFDR, 2, function(x) {sum(x < 0.05)})
+
+neutGenes<-rownames(allCor)[which(allCor[,1] > 0 & allFDR[,1] < 0.05)]
+length(neutGenes)	# 2069
+lympGenes<-rownames(allCor)[which(allCor[,2] > 0 & allFDR[,2] < 0.05)]
+length(lympGenes)	# 1699
+eosGenes<-rownames(allCor)[which(allCor[,3] > 0 & allFDR[,3] < 0.05)]
+length(eosGenes)	# 119
+monoGenes<-rownames(allCor)[which(allCor[,4] > 0 & allFDR[,4] < 0.05)]
+length(monoGenes)	# 127
+basoGenes<-rownames(allCor)[which(allCor[,5] > 0 & allFDR[,5] < 0.05)]
+length(basoGenes)	# 2
+
+
+library(WGCNA)
+
+# need to get unmatched genes
+unmatchedGenes<-rownames(tVoom2)[!(rownames(tVoom2) %in% unique(c(neutGenes, lympGenes, eosGenes, monoGenes, basoGenes)))]
+length(unmatchedGenes) # 9360
+
+determinePower<-function(setVoom)
+{
+  powers<-c(1:10,seq(12,30,2))
+  # call the network topology analysis function
+  sft<-pickSoftThreshold(t(setVoom$E), powerVector=powers, verbose=5)
+  # plot the results
+  par(mfrow=c(1,2))
+  # scale-free topology fit index as a function of the soft-thresholding power
+  plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], xlab="Soft Threshold (power)", ylab="Scale Free Topology Model Fit,signed R^2", type="n", main=paste("Scale independence"))
+  text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], labels=powers, col="red")
+  # this line corresponds to using a R^2 cutoff of h
+  abline(h=0.9, col="red")
+  abline(h=0.8, col="blue")
+  # mean connectivity as a function of the soft-thresholding power
+  plot(sft$fitIndices[,1], sft$fitIndices[,5], xlab="Soft Threshold (power)", ylab="Mean Connectivity", type="n", main=paste("Mean Connectivity"))
+  text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, col="red")
+}
+
+# power for
+# neut - 12
+# lymp - 10
+# eos - 9
+# mono - 14
+# baso - ? too few genes
+# unassigned - 10
+
+determinePower(tVoom2[match(neutGenes, rownames(tVoom2)),])
+determinePower(tVoom2[match(lympGenes, rownames(tVoom2)),])
+determinePower(tVoom2[match(eosGenes, rownames(tVoom2)),])
+determinePower(tVoom2[match(monoGenes, rownames(tVoom2)),])
+#determinePower(tVoom2[match(basoGenes, rownames(tVoom2)),])
+
+determinePower(tVoom2[match(unmatchedGenes, rownames(tVoom2)),])
+
+# make functions to create WGCNA gene sets
+createWGCNA<-function(cellGenes, tVoom2, curPower)
+{
+	matchIndex<-match(cellGenes, rownames(tVoom2))
+	setVoom<-tVoom2[matchIndex,]
+	
+	time1<-Sys.time()
+	voomNetTempus<-blockwiseModules(t(setVoom$E), power=curPower, networkType="signed", TOMType="signed", minModuleSize=30, maxBlockSize=6000, saveTOMS=TRUE, saveTOMFileBase = "test", deepSplit=4, numericLabels=TRUE, minCoreKME=0.7, minKMEtoStay=0.5)
+	time2<-Sys.time()
+	print(time2-time1)	# 10 sec, 7 sec, 4 sec, 5 sec, 3 sec, 7 sec, 5 min.
+	return(voomNetTempus)
+}
+# 5 neut, 7 lymp, 2 eos, 2 mono, 26 for unmatched
+neutrophilWGCNA<-createWGCNA(neutGenes, tVoom2, curPower=12)
+lymphocyteWGCNA<-createWGCNA(lympGenes, tVoom2, curPower=10)
+eosinophilWGCNA<-createWGCNA(eosGenes, tVoom2, curPower=9)
+monocyteWGCNA<-createWGCNA(monoGenes, tVoom2, curPower=14)
+unmatchedWGCNA<-createWGCNA(unmatchedGenes, tVoom2, curPower=10) # took 1.2 min.
+
+table(neutrophilWGCNA$colors)
+table(lymphocyteWGCNA$colors)
+table(eosinophilWGCNA$colors)
+table(monocyteWGCNA$colors)
+table(unmatchedWGCNA$colors)
+
+library(biomaRt)
+mart = useMart(host='may2017.archive.ensembl.org', biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl")
+resultsBio<-getBM(attributes=c("ensembl_gene_id", "hgnc_symbol","gene_biotype"), filters="ensembl_gene_id", values=rownames(tVoom2), mart=mart)
+
+neutNames<-as.character(resultsBio$hgnc_symbol[match(neutGenes, resultsBio$ensembl_gene_id)])
+lympNames<-as.character(resultsBio$hgnc_symbol[match(lympGenes, resultsBio$ensembl_gene_id)])
+eosNames<-as.character(resultsBio$hgnc_symbol[match(eosGenes, resultsBio$ensembl_gene_id)])
+monoNames<-as.character(resultsBio$hgnc_symbol[match(monoGenes, resultsBio$ensembl_gene_id)])
+unmaNames<-as.character(resultsBio$hgnc_symbol[match(unmatchedGenes, resultsBio$ensembl_gene_id)])
+
+# now how to store it
+neutSet<-cbind(rep("neutrophil", length(neutGenes)), neutGenes, paste("neut",neutrophilWGCNA$colors,sep=""), neutNames)
+lympSet<-cbind(rep("lymphocyte", length(lympGenes)), lympGenes, paste("lymp",lymphocyteWGCNA$colors,sep=""), lympNames)
+eosSet<-cbind(rep("eosinophil", length(eosGenes)), eosGenes, paste("eos",eosinophilWGCNA$colors,sep=""), eosNames)
+monoSet<-cbind(rep("monocyte", length(monoGenes)), monoGenes, paste("mono",monocyteWGCNA$colors,sep=""), monoNames)
+unmaSet<-cbind(rep("unassigned", length(unmatchedGenes)), unmatchedGenes, paste("unma",unmatchedWGCNA$colors,sep=""), unmaNames)
+
+allSets<-rbind(neutSet, lympSet, eosSet, monoSet, unmaSet)
+table(allSets[,3])
+
+colnames(allSets)<-c("cellType","ensemblID","geneSet","symbol")
+allSetsOrd<-allSets[order(allSets[,3], allSets[,4]),]
+
+#allSetsOrig<-read.csv(file="/Users/ewhalen/Box Sync/Projects/ICAC/MUPPITS/tempus_Combine4Phases/geneSets_v2_using176samples/tempus_geneSetsByAssignedCell_v2.csv")
+
+## the blood module sets have been recreated
+#table(allSetsOrd==allSetsOrig) # now all a match
+#allSetsOrd<-as.data.frame(allSetsOrd)
+allSets <- as.data.frame(allSets)
+# Write out the blood modules as a .csv file.
+write.csv(allSets[allSets$cellType == "neutrophil", ], file=file.path(resultsDir, "neutrophilBloodModules.csv"), quote=F, row.names=F)
+write.csv(allSets[allSets$cellType == "lymphocyte", ], file=file.path(resultsDir, "lymphocyteBloodModules.csv"), quote=F, row.names=F)
+write.csv(allSets[allSets$cellType == "eosinophil", ], file=file.path(resultsDir, "eosinophilBloodModules.csv"), quote=F, row.names=F)
+write.csv(allSets[allSets$cellType == "monocyte", ],   file=file.path(resultsDir, "monocyteBloodModules.csv"), quote=F, row.names=F)
+write.csv(allSets[allSets$cellType == "unassigned", ], file=file.path(resultsDir, "unassignedBloodModules.csv"), quote=F, row.names=F)
+write.csv(allSets, file=file.path(resultsDir, "allBloodModules.csv"), quote=F, row.names=F)
+
+```
+
+## Calculate Gene Set Means
+
+```{r geneSetExp}
+allSetsOrd <- as.data.frame(allSetsOrd)
+uniGS<-unique(as.character(allSetsOrd$geneSet))
+tempusGSmeans<-c()
+for (i in 1:length(uniGS))
+{
+  curGS<-uniGS[i]
+  curIDs<-as.character(allSetsOrd$ensemblID[which(curGS==allSetsOrd$geneSet)])
+  matchIndex<-match(curIDs, rownames(tVoomNoReps))
+  if (any(is.na(matchIndex)))
+    matchIndex<-matchIndex[-which(is.na(matchIndex))]
+  curGSmean<-apply(tVoomNoReps$E[matchIndex, ], 2, mean)
+  tempusGSmeans<-rbind(tempusGSmeans, curGSmean)
+}
+rownames(tempusGSmeans)<-uniGS
+all(colnames(tempusGSmeans)==tDesignNoReps$LibraryID)
+
+# uncomment to confirm
+#origGSmeans<-read.csv(file.path(testDir, "validated_tempusGeneSets_387samples.csv"), row.names=1)
+#all(rownames(tempusGSmeans)==rownames(origGSmeans))
+#all(colnames(tempusGSmeans)==colnames(origGSmeans))
+#table(round(tempusGSmeans,10)==round(origGSmeans,10)) # a match
+
+```
