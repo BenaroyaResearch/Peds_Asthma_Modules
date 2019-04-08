@@ -1,0 +1,476 @@
+---
+title: "Create Blood Modules and Gene Set Expression Values"
+author: "Elizabeth Whalen"
+date: "4/4/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Optionally install, and load required libraries
+```{r loadLibraries}
+
+# Determine missing Bioconductor packages and install
+BioCPackages <- c("edgeR", "biomaRt")
+new.packages <- BioCPackages[!(BioCPackages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) {
+  source("http://bioconductor.org/biocLite.R")
+  biocLite(new.packages)
+}
+ 
+# Determine missing CRAN Packages and install
+CRANPackages <- c("WGCNA")
+new.packages <- CRANPackages[!(CRANPackages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) {
+  install.packages(new.packages)
+}
+```
+
+## Read in Blood GEO data
+
+```{r readData}
+
+dataDir <- "../data"
+resultsDir <- "../results"
+
+bloodGEO<-read.delim(file=file.path(dataDir, "raw_counts_blood_muppits511.txt"), sep=",", row.names=1)
+dim(bloodGEO)
+# get the flow cell info
+table(unlist(lapply(strsplit(colnames(bloodGEO), "_"), function(x) {x[[2]]})))
+
+# read in meta data
+bloodData<-read.csv(file=file.path(dataDir, "MUPPITS1_updated_blood_metadata_GEO.csv"), skip=43)
+# subset to actual data
+bloodData<-bloodData[1:511, ] # keep rows for 500 libraries and keep columns up until raw.file
+
+all(colnames(bloodGEO)==bloodData$Sample.Name)
+# need to rearrange
+bloodData<-bloodData[match(colnames(bloodGEO), bloodData$Sample.Name),]
+all(colnames(bloodGEO)==bloodData$Sample.Name)
+
+```
+
+## Create Voom Counts for Phase 1
+
+```{r phase1Voom}
+
+# subset to phase 1 libraries
+keepPhase1<-which(bloodData$Characteristics..Flowcell=="C8B30ANXX")
+
+bloodCounts1<-bloodGEO[,keepPhase1]
+bloodData1<-bloodData[keepPhase1,]
+all(colnames(bloodCounts1)==bloodData1$Sample.Name)
+
+library(edgeR)
+
+d1<-DGEList(counts=bloodCounts1)
+d1<-calcNormFactors(d1)
+
+keepRows1<-rowSums(round(cpm(d1$counts)) >= 1) >= 0.1*ncol(bloodCounts1)
+table(keepRows1)	# removes 45,091 rows
+
+curDGEBlood1<-d1[keepRows1,]	# now have 19,162 rows
+curDGEBlood1<-calcNormFactors(curDGEBlood1)
+
+library(biomaRt)
+
+mart = useMart(host='oct2016.archive.ensembl.org', biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl")
+resultsBio1<-getBM(attributes=c("ensembl_gene_id", "hgnc_symbol","gene_biotype"), filters="ensembl_gene_id", values=rownames(curDGEBlood1), mart=mart)
+resultsBioProtein1<-resultsBio1[which(resultsBio1$gene_biotype=="protein_coding"),]
+
+keepIndex1<-which(rownames(curDGEBlood1) %in% resultsBioProtein1$ensembl_gene_id)
+
+curDGEBlood1<-curDGEBlood1[keepIndex1,]
+dim(curDGEBlood1)	# 13,486
+curDGEBlood1<-calcNormFactors(curDGEBlood1)
+
+### Run Voom
+
+# make sure we have factors set up correctly
+bloodData1$Visit<-as.character(bloodData1$Characteristics..Analysis.Visit)
+bloodData1$Visit<-factor(as.character(bloodData1$Visit), levels=c("Visit 0","Visit 1a","Visit 1b"))
+
+curMM1<-model.matrix(~Visit, data=bloodData1)
+bloodVoom1<-voomWithQualityWeights(curDGEBlood1, curMM1, plot=TRUE)
+
+# now need to take into account duplicate correlation
+bloodData1$Source.Name<-as.factor(as.character(bloodData1$Source.Name))
+corfit1<-duplicateCorrelation(bloodVoom1, curMM1, block=bloodData1$Source.Name)
+corfit1$consensus.correlation	# 0.4336816
+
+newBloodVoom1<-voomWithQualityWeights(curDGEBlood1, curMM1, plot=TRUE, block=bloodData1$Source.Name, correlation=corfit1$consensus)
+
+```
+
+## Create Voom Counts for Phase 2
+
+```{r phase2Voom}
+
+# subset to phase 2 libraries
+keepPhase2<-which(bloodData$Characteristics..Flowcell=="C97JMANXX")
+
+bloodCounts2<-bloodGEO[,keepPhase2]
+bloodData2<-bloodData[keepPhase2,]
+all(colnames(bloodCounts2)==bloodData2$Sample.Name)
+
+d2<-DGEList(counts=bloodCounts2)
+d2<-calcNormFactors(d2)
+
+keepRows2<-rowSums(round(cpm(d2$counts)) >= 1) >= 0.1*ncol(bloodCounts2)
+table(keepRows2)	# removes 45,341 rowss
+
+curDGEBlood2<-d2[keepRows2,]	# now have 18,912 rows
+
+mart2 = useMart(host='may2017.archive.ensembl.org', biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl")
+resultsBio2<-getBM(attributes=c("ensembl_gene_id", "hgnc_symbol","gene_biotype"), filters="ensembl_gene_id", values=rownames(curDGEBlood2), mart=mart2)
+resultsBioProtein2<-resultsBio2[which(resultsBio2$gene_biotype=="protein_coding"),]
+
+# use the original way
+keepGeneIDs2<-as.character(resultsBio2$ensembl_gene_id[which(resultsBio2$gene_biotype=="protein_coding")])
+matchIndex2<-match(keepGeneIDs2, rownames(curDGEBlood2))
+
+curDGEBlood2<-curDGEBlood2[matchIndex2,]
+dim(curDGEBlood2)  # now have 13,460 rows
+
+### Run Voom
+
+# set up factors correctly
+bloodData2$Visit<-as.character(bloodData2$Characteristics..Analysis.Visit)
+bloodData2$Visit[which(bloodData2$Visit %in% c("Visit 1a","Visit 2a"))]<-"Visit A"
+bloodData2$Visit[which(bloodData2$Visit %in% c("Visit 1b","Visit 2b"))]<-"Visit B"
+bloodData2$Visit<-factor(as.character(bloodData2$Visit), levels=c("Visit 0","Visit A","Visit B"))
+
+curMM2<-model.matrix(~Visit, data=bloodData2)
+bloodVoom2<-voomWithQualityWeights(curDGEBlood2, curMM2, plot=TRUE)
+
+# now take into account correlation from samples from the same person
+bloodData2$Source.Name<-as.factor(as.character(bloodData2$Source.Name))
+corfit2<-duplicateCorrelation(bloodVoom2, curMM2, block=bloodData2$Source.Name)
+corfit2$consensus 	# 0.3996951 
+
+newBloodVoom2<-voomWithQualityWeights(curDGEBlood2, curMM2, plot=TRUE, block=bloodData2$Source.Name, correlation=corfit2$consensus)
+
+```
+
+## Create Voom Counts for Phase 3
+
+```{r phase3Voom}
+
+# subset to phase 3 libraries
+keepPhase3<-which(bloodData$Characteristics..Flowcell=="CAJMRANXX")
+
+bloodCounts3<-bloodGEO[,keepPhase3]
+bloodData3<-bloodData[keepPhase3,]
+all(colnames(bloodCounts3)==bloodData3$Sample.Name)
+
+d3<-DGEList(counts=bloodCounts3)
+d3<-calcNormFactors(d3)
+
+keepRows3<-rowSums(round(cpm(d3$counts)) >= 1) >= 0.1*ncol(bloodCounts3)
+table(keepRows3)	# removes 44,954 rows
+
+curDGEBlood3<-d3[keepRows3,]	# now have 19,299 rows
+
+mart3 = useMart(host='mar2017.archive.ensembl.org', biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl")
+resultsBio3<-getBM(attributes=c("ensembl_gene_id", "hgnc_symbol","gene_biotype"), filters="ensembl_gene_id", values=rownames(curDGEBlood3), mart=mart3)
+resultsBioProtein3<-resultsBio3[which(resultsBio3$gene_biotype=="protein_coding"),]
+
+keepGeneIDs3<-as.character(resultsBio3$ensembl_gene_id[which(resultsBio3$gene_biotype=="protein_coding")])
+# there is one duplicate
+keepGeneIDs3<-unique(keepGeneIDs3)
+matchIndex3<-match(keepGeneIDs3, rownames(curDGEBlood3))
+
+curDGEBlood3<-curDGEBlood3[matchIndex3,]
+dim(curDGEBlood3)  # now have 13,564 rows
+
+### Run Voom
+
+# set up factors correctly
+bloodData3$Visit<-as.character(bloodData3$Characteristics..Analysis.Visit)
+bloodData3$Visit[which(bloodData3$Visit %in% c("Visit 1a","Visit 2a"))]<-"Visit A"
+bloodData3$Visit[which(bloodData3$Visit %in% c("Visit 1b","Visit 2b"))]<-"Visit B"
+bloodData3$Visit<-factor(as.character(bloodData3$Visit), levels=c("Visit 0","Visit A","Visit B"))
+
+# now run without lane in model
+curMM3<-model.matrix(~Visit, data=bloodData3)
+bloodVoom3<-voomWithQualityWeights(curDGEBlood3, curMM3, plot=TRUE)
+
+# now need to take into account duplicate correlation
+bloodData3$Source.Name<-as.factor(as.character(bloodData3$Source.Name))
+corfit3<-duplicateCorrelation(bloodVoom3, curMM3, block=bloodData3$Source.Name)
+corfit3$consensus.correlation	# 0.4445274 
+
+newBloodVoom3<-voomWithQualityWeights(curDGEBlood3, curMM3, plot=TRUE, block=bloodData3$Source.Name, correlation=corfit3$consensus)
+
+```
+
+## Create Voom Counts for Phase 4
+
+```{r phase4Voom}
+
+# subset to phase 4 libraries
+keepPhase4<-which(bloodData$Characteristics..Flowcell %in% c("CB4FNANXX","CB5HFANXX"))
+
+bloodCounts4<-bloodGEO[,keepPhase4]
+bloodData4<-bloodData[keepPhase4,]
+all(colnames(bloodCounts4)==bloodData4$Sample.Name)
+
+d4<-DGEList(counts=bloodCounts4)
+d4<-calcNormFactors(d4)
+
+keepRows4<-rowSums(round(cpm(d4$counts)) >= 1) >= 0.1*ncol(bloodCounts4)
+table(keepRows4) # removes 44,960 rows
+
+curDGEBlood4<-d4[keepRows4,]	# now have 19,293 rows
+
+mart4 = useMart(host='may2017.archive.ensembl.org', biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl")
+resultsBio4<-getBM(attributes=c("ensembl_gene_id", "hgnc_symbol","gene_biotype"), filters="ensembl_gene_id", values=rownames(curDGEBlood4), mart=mart4)
+resultsBioProtein4<-resultsBio4[which(resultsBio4$gene_biotype=="protein_coding"),]
+
+keepGeneIDs4<-as.character(resultsBio4$ensembl_gene_id[which(resultsBio4$gene_biotype=="protein_coding")])
+matchIndex4<-match(keepGeneIDs4, rownames(curDGEBlood4))
+
+curDGEBlood4<-curDGEBlood4[matchIndex4,]
+dim(curDGEBlood4)  # now have 13,571 rows
+
+# remove 4 more libraries with high median CV coverage (> 0.85): lib16525 lib16570 lib16571 lib16668
+remIndex4<-which(bloodData4$Sample.Name %in% c("lib16525_CB4FNANXX","lib16570_CB5HFANXX","lib16571_CB5HFANXX","lib16668_CB5HFANXX"))
+bloodData4<-bloodData4[-remIndex4,]
+curDGEBlood4<-curDGEBlood4[,-remIndex4]
+all(bloodData4$Sample.Name==colnames(curDGEBlood4))
+
+### Run Voom
+
+# set up factors correctly
+bloodData4$Visit<-as.character(bloodData4$Characteristics..Analysis.Visit)
+bloodData4$Visit[which(bloodData4$Visit %in% c("Visit 1a","Visit 2a"))]<-"Visit A"
+bloodData4$Visit[which(bloodData4$Visit %in% c("Visit 1b","Visit 2b"))]<-"Visit B"
+bloodData4$Visit<-factor(as.character(bloodData4$Visit), levels=c("Visit 0","Visit A","Visit B"))
+
+curMM4<-model.matrix(~Visit, data=bloodData4)
+bloodVoom4<-voomWithQualityWeights(curDGEBlood4, curMM4, plot=TRUE)
+
+# now need to take into account duplicate correlation
+bloodData4$Source.Name<-as.factor(as.character(bloodData4$Source.Name))
+corfit4<-duplicateCorrelation(bloodVoom4, curMM4, block=bloodData4$Source.Name)
+corfit4$consensus.correlation	# 0.399683
+
+newBloodVoom4<-voomWithQualityWeights(curDGEBlood4, curMM4, plot=TRUE, block=bloodData4$Source.Name, correlation=corfit4$consensus)
+
+```
+
+## Combine and create set for module creation
+
+```{r combineVoom}
+
+allRN<-c(rownames(newBloodVoom1), rownames(newBloodVoom2), rownames(newBloodVoom3), rownames(newBloodVoom4))
+keepIDs<-names(which(table(allRN)==4))
+length(keepIDs) # 13316
+
+bVoom1sub<-newBloodVoom1[which(rownames(newBloodVoom1) %in% keepIDs),]
+bVoom2sub<-newBloodVoom2[which(rownames(newBloodVoom2) %in% keepIDs),]
+bVoom3sub<-newBloodVoom3[which(rownames(newBloodVoom3) %in% keepIDs),]
+bVoom4sub<-newBloodVoom4[which(rownames(newBloodVoom4) %in% keepIDs),]
+
+all(rownames(bVoom1sub)==rownames(bVoom2sub))
+all(rownames(bVoom1sub)==rownames(bVoom3sub))
+all(rownames(bVoom1sub)==rownames(bVoom4sub))
+
+allBvoom<-cbind(bVoom1sub, bVoom2sub, bVoom3sub, bVoom4sub)
+
+# use this for the set that are used to create the gene set expression
+bDesignMod<-bloodData[which(bloodData$Characteristics..Used.in.Module.Construction=="Yes"),]
+
+# subset to libraries used to create modules
+bVoomMod<-allBvoom[, which(colnames(allBvoom) %in% bDesignMod$Sample.Name)]
+all(colnames(bVoomMod)==bDesignMod$LibraryID)
+
+```
+
+## Create Blood Modules
+
+```{r createMods}
+
+neutCor<-c()
+neutCorP<-c()
+lympCor<-c()
+lympCorP<-c()
+eosCor<-c()
+eosCorP<-c()
+monoCor<-c()
+monoCorP<-c()
+basoCor<-c()
+basoCorP<-c()
+
+for (i in 1:nrow(bVoomMod))
+{
+	curTest<-cor.test(bDesignMod$Characteristics..Blood.Neutrophil.Differential, bVoomMod$E[i,], use="pairwise.complete.obs")
+	neutCor<-c(neutCor, curTest$estimate)
+	neutCorP<-c(neutCorP, curTest$p.value)
+
+	curTest<-cor.test(bDesignMod$Characteristics..Blood.Lymphocyte.Differential, bVoomMod$E[i,], use="pairwise.complete.obs")
+	lympCor<-c(lympCor, curTest$estimate)
+	lympCorP<-c(lympCorP, curTest$p.value)
+
+	curTest<-cor.test(bDesignMod$Characteristics..Blood.Eosinophil.Differential, bVoomMod$E[i,], use="pairwise.complete.obs")
+	eosCor<-c(eosCor, curTest$estimate)
+	eosCorP<-c(eosCorP, curTest$p.value)
+	
+	curTest<-cor.test(bDesignMod$Characteristics..Blood.Monocyte.Differential, bVoomMod$E[i,], use="pairwise.complete.obs")
+	monoCor<-c(monoCor, curTest$estimate)
+	monoCorP<-c(monoCorP, curTest$p.value)
+
+	curTest<-cor.test(bDesignMod$Characteristics..Blood.Basophil.Differential, bVoomMod$E[i,], use="pairwise.complete.obs")
+	basoCor<-c(basoCor, curTest$estimate)
+	basoCorP<-c(basoCorP, curTest$p.value)
+}
+
+# now bind together and see how many genes are assigned to cell types
+allCor<-cbind(neutCor, lympCor, eosCor, monoCor, basoCor)
+allCorP<-cbind(neutCorP, lympCorP, eosCorP, monoCorP, basoCorP)
+
+rownames(allCor)<-rownames(bVoomMod)
+rownames(allCorP)<-rownames(bVoomMod)
+
+# run multiple testing correlation
+apply(allCorP, 2, function(x) {sum(x < 0.05)})
+allFDR<-apply(allCorP, 2, function(x) {p.adjust(x)})
+apply(allFDR, 2, function(x) {sum(x < 0.05)})
+
+neutGenes<-rownames(allCor)[which(allCor[,1] > 0 & allFDR[,1] < 0.05)]
+length(neutGenes)	# 2069
+lympGenes<-rownames(allCor)[which(allCor[,2] > 0 & allFDR[,2] < 0.05)]
+length(lympGenes)	# 1699
+eosGenes<-rownames(allCor)[which(allCor[,3] > 0 & allFDR[,3] < 0.05)]
+length(eosGenes)	# 119
+monoGenes<-rownames(allCor)[which(allCor[,4] > 0 & allFDR[,4] < 0.05)]
+length(monoGenes)	# 127
+basoGenes<-rownames(allCor)[which(allCor[,5] > 0 & allFDR[,5] < 0.05)]
+length(basoGenes)	# 2
+
+
+library(WGCNA)
+
+# need to get unmatched genes
+unmatchedGenes<-rownames(bVoomMod)[!(rownames(bVoomMod) %in% unique(c(neutGenes, lympGenes, eosGenes, monoGenes, basoGenes)))]
+length(unmatchedGenes) # 9360
+
+determinePower<-function(setVoom)
+{
+  powers<-c(1:10,seq(12,30,2))
+  # call the network topology analysis function
+  sft<-pickSoftThreshold(t(setVoom$E), powerVector=powers, verbose=5)
+  # plot the results
+  par(mfrow=c(1,2))
+  # scale-free topology fit index as a function of the soft-thresholding power
+  plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], xlab="Soft Threshold (power)", ylab="Scale Free Topology Model Fit,signed R^2", type="n", main=paste("Scale independence"))
+  text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], labels=powers, col="red")
+  # this line corresponds to using a R^2 cutoff of h
+  abline(h=0.9, col="red")
+  abline(h=0.8, col="blue")
+  # mean connectivity as a function of the soft-thresholding power
+  plot(sft$fitIndices[,1], sft$fitIndices[,5], xlab="Soft Threshold (power)", ylab="Mean Connectivity", type="n", main=paste("Mean Connectivity"))
+  text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, col="red")
+}
+
+# power for
+# neut - 12
+# lymp - 10
+# eos - 9
+# mono - 14
+# baso - ? too few genes
+# unassigned - 10
+
+determinePower(bVoomMod[match(neutGenes, rownames(bVoomMod)),])
+determinePower(bVoomMod[match(lympGenes, rownames(bVoomMod)),])
+determinePower(bVoomMod[match(eosGenes, rownames(bVoomMod)),])
+determinePower(bVoomMod[match(monoGenes, rownames(bVoomMod)),])
+#determinePower(bVoomMod[match(basoGenes, rownames(bVoomMod)),])
+
+determinePower(bVoomMod[match(unmatchedGenes, rownames(bVoomMod)),])
+
+# make functions to create WGCNA gene sets
+createWGCNA<-function(cellGenes, bVoomMod, curPower)
+{
+	matchIndex<-match(cellGenes, rownames(bVoomMod))
+	setVoom<-bVoomMod[matchIndex,]
+	
+	time1<-Sys.time()
+	voomNetBlood<-blockwiseModules(t(setVoom$E), power=curPower, networkType="signed", TOMType="signed", minModuleSize=30, maxBlockSize=6000, saveTOMS=TRUE, saveTOMFileBase = "test", deepSplit=4, numericLabels=TRUE, minCoreKME=0.7, minKMEtoStay=0.5)
+	time2<-Sys.time()
+	print(time2-time1)	
+	return(voomNetBlood)
+}
+# 5 neut, 7 lymp, 2 eos, 2 mono, 26 for unmatched
+neutrophilWGCNA<-createWGCNA(neutGenes, bVoomMod, curPower=12)
+lymphocyteWGCNA<-createWGCNA(lympGenes, bVoomMod, curPower=10)
+eosinophilWGCNA<-createWGCNA(eosGenes, bVoomMod, curPower=9)
+monocyteWGCNA<-createWGCNA(monoGenes, bVoomMod, curPower=14)
+unmatchedWGCNA<-createWGCNA(unmatchedGenes, bVoomMod, curPower=10) # took 1.2 min.
+
+table(neutrophilWGCNA$colors)
+table(lymphocyteWGCNA$colors)
+table(eosinophilWGCNA$colors)
+table(monocyteWGCNA$colors)
+table(unmatchedWGCNA$colors)
+
+library(biomaRt)
+mart = useMart(host='may2017.archive.ensembl.org', biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl")
+resultsBio<-getBM(attributes=c("ensembl_gene_id", "hgnc_symbol","gene_biotype"), filters="ensembl_gene_id", values=rownames(bVoomMod), mart=mart)
+
+neutNames<-as.character(resultsBio$hgnc_symbol[match(neutGenes, resultsBio$ensembl_gene_id)])
+lympNames<-as.character(resultsBio$hgnc_symbol[match(lympGenes, resultsBio$ensembl_gene_id)])
+eosNames<-as.character(resultsBio$hgnc_symbol[match(eosGenes, resultsBio$ensembl_gene_id)])
+monoNames<-as.character(resultsBio$hgnc_symbol[match(monoGenes, resultsBio$ensembl_gene_id)])
+unmaNames<-as.character(resultsBio$hgnc_symbol[match(unmatchedGenes, resultsBio$ensembl_gene_id)])
+
+# now how to store it
+neutSet<-cbind(rep("neutrophil", length(neutGenes)), neutGenes, paste("neut",neutrophilWGCNA$colors,sep=""), neutNames)
+lympSet<-cbind(rep("lymphocyte", length(lympGenes)), lympGenes, paste("lymp",lymphocyteWGCNA$colors,sep=""), lympNames)
+eosSet<-cbind(rep("eosinophil", length(eosGenes)), eosGenes, paste("eos",eosinophilWGCNA$colors,sep=""), eosNames)
+monoSet<-cbind(rep("monocyte", length(monoGenes)), monoGenes, paste("mono",monocyteWGCNA$colors,sep=""), monoNames)
+unmaSet<-cbind(rep("unassigned", length(unmatchedGenes)), unmatchedGenes, paste("unma",unmatchedWGCNA$colors,sep=""), unmaNames)
+
+allSets<-rbind(neutSet, lympSet, eosSet, monoSet, unmaSet)
+table(allSets[,3])
+
+colnames(allSets)<-c("cellType","ensemblID","geneSet","symbol")
+allSetsOrd<-allSets[order(allSets[,3], allSets[,4]),]
+
+allSets <- as.data.frame(allSets)
+# Write out the blood modules as a .csv file.
+write.csv(allSets[allSets$cellType == "neutrophil", ], file=file.path(resultsDir, "neutrophilBloodModules.csv"), quote=F, row.names=F)
+write.csv(allSets[allSets$cellType == "lymphocyte", ], file=file.path(resultsDir, "lymphocyteBloodModules.csv"), quote=F, row.names=F)
+write.csv(allSets[allSets$cellType == "eosinophil", ], file=file.path(resultsDir, "eosinophilBloodModules.csv"), quote=F, row.names=F)
+write.csv(allSets[allSets$cellType == "monocyte", ],   file=file.path(resultsDir, "monocyteBloodModules.csv"), quote=F, row.names=F)
+write.csv(allSets[allSets$cellType == "unassigned", ], file=file.path(resultsDir, "unassignedBloodModules.csv"), quote=F, row.names=F)
+write.csv(allSets, file=file.path(resultsDir, "allBloodModules.csv"), quote=F, row.names=F)
+
+```
+
+## Calculate Gene Set Means
+
+```{r geneSetExp}
+
+# subset the voom counts to those used in the analysis
+subBvoom<-allBvoom[,match(as.character(bloodData$Sample.Name[which(bloodData$Characteristics..Used.in.Analysis=="Yes")]), colnames(allBvoom))]
+all(colnames(subBvoom) == as.character(bloodData$Sample.Name[which(bloodData$Characteristics..Used.in.Analysis=="Yes")])) # TRUE
+
+allSetsOrd<-as.data.frame(allSetsOrd)
+uniGS<-unique(as.character(allSetsOrd$geneSet))
+bloodGSmeans<-c()
+for (i in 1:length(uniGS))
+{
+  curGS<-uniGS[i]
+  curIDs<-as.character(allSetsOrd$ensemblID[which(curGS==allSetsOrd$geneSet)])
+  matchIndex<-match(curIDs, rownames(subBvoom))
+  if (any(is.na(matchIndex)))
+    matchIndex<-matchIndex[-which(is.na(matchIndex))]
+  curGSmean<-apply(subBvoom$E[matchIndex, ], 2, mean)
+  bloodGSmeans<-rbind(bloodGSmeans, curGSmean)
+}
+rownames(bloodGSmeans)<-uniGS
+
+```
