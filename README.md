@@ -13,7 +13,7 @@ This repository includes the processed data and code necessary to generate, and 
 
 ### Prerequisites
 
-You will need to use [RStudio](https://www.rstudio.com), or possibly [R](https://www.r-project.org) to execute the scripts below that process the data.  The scripts listed below are R-markdown scripts.
+You will need to use [RStudio](https://www.rstudio.com), or possibly [R](https://www.r-project.org) to execute the scripts below that process the data.  The scripts listed below are R-markdown scripts.  The libraries edgeR, limma, biomaRt, and WGCNA will be used in the following scripts.  You may want to install those into your R environment advance.
 
 ### Module Generation
 
