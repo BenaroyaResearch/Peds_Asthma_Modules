@@ -717,7 +717,7 @@ all(rownames(nasalVoom1Sub)==rownames(nasalVoom4Sub))
 
 # make the design matrices compatible - all design matrices have 3 columns so it's okay
 allNasalVoom<-cbind(nasalVoom1Sub, nasalVoom2Sub, nasalVoom3Sub, nasalVoom4Sub)
-
+save(allNasalVoom, file=file.path(resultsDir, "allNasalVoom.RData"))
 ```
 
 ## Remove Samples that are not in Final Set for Analysis
@@ -732,7 +732,7 @@ allNasalVoomSub<-allNasalVoom[, matchIndex]
 
 ```
 
-## Calculate Gene Set Expression
+## Calculate Gene Set Mean Expression
 
 ```{r geneSetExpression}
 
@@ -751,6 +751,8 @@ for (i in 1:length(uniMods))
     gsExpr<-rbind(gsExpr, allNasalVoomSub$E[matchIndex,])
 }
 rownames(gsExpr)<-uniMods
+nasalGSExpr <- gsExpr
+save(nasalGSExpr, file=file.path(resultsDir, paste("Nasal", "gsExpr.RData", sep="_")))
 
 ```
 

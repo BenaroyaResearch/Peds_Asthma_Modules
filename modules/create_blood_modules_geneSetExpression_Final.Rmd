@@ -279,6 +279,8 @@ all(rownames(bVoom1sub)==rownames(bVoom3sub))
 all(rownames(bVoom1sub)==rownames(bVoom4sub))
 
 allBvoom<-cbind(bVoom1sub, bVoom2sub, bVoom3sub, bVoom4sub)
+allBloodVoom <- allBvoom
+save(allBloodVoom, file=file.path(resultsDir, "allBloodVoom.RData"))
 
 # use this for the set that are used to create the gene set expression
 bDesignMod<-bloodData[which(bloodData$Characteristics..Used.in.Module.Construction=="Yes"),]
@@ -472,5 +474,7 @@ for (i in 1:length(uniGS))
   bloodGSmeans<-rbind(bloodGSmeans, curGSmean)
 }
 rownames(bloodGSmeans)<-uniGS
+bloodGSExpr <- bloodGSmeans
+save(bloodGSExpr, file=file.path(resultsDir, paste("Blood", "gsExpr.RData", sep="_")))
 
 ```
