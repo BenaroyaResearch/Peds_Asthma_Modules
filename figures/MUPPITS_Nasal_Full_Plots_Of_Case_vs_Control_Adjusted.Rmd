@@ -1,0 +1,275 @@
+---
+title: "MUPPITS Full Nasal Plots"
+author: "Elizabeth Whalen"
+date: "11/3/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in Data
+
+```{r readData}
+
+dataDir <- "../data"
+resultsDir <- "../results"
+
+nasalGS<-read.csv(file=file.path(dataDir, "nasalGeneSets_374samples.csv"), row.names=1)
+nasalDesign<-read.csv(file=file.path(dataDir, "nasalDesign_374samples.csv"))
+
+all(colnames(nasalGS)==nasalDesign$library.sampleId)
+
+```
+
+## Remove Batch Effects in 1 way
+
+```{r removeBatch}
+
+# need to set up case/control status for visit 0
+uniIDs<-unique(as.character(nasalDesign$Subject.Identifier.for.the.Study))
+nasalDesign$Case.or.Control.Status.Original<-as.character(nasalDesign$Case.or.Control.Status.Original)
+for (i in 1:length(uniIDs))
+{
+  curID<-uniIDs[i]
+  curIndex<-which(nasalDesign$Subject.Identifier.for.the.Study==curID)
+  curIndex0<-which(nasalDesign$Subject.Identifier.for.the.Study==curID & nasalDesign$Visit=="Visit 0")
+  if (length(curIndex0)==1)
+  {
+    if ("Case" %in% nasalDesign$Case.or.Control.Status.Original[curIndex])
+      nasalDesign$Case.or.Control.Status.Original[curIndex0]<-"Case"
+    else
+      nasalDesign$Case.or.Control.Status.Original[curIndex0]<-"Control"
+  }
+}
+table(nasalDesign$Case.or.Control.Status.Original)
+
+# remove the same libraries from each set so they are comparable
+remIndex<-unique(c(which(is.na(nasalDesign$Nasal.Lymphocyte.Count)), which(is.na(nasalDesign$Nasal.Macrophage.Count)), which(is.na(nasalDesign$Nasal.Eosinophil.Count)), which(is.na(nasalDesign$Nasal.Epithelial.Count)), which(is.na(nasalDesign$Nasal.Squamous.Count)), which(is.na(nasalDesign$libCounts)), which(is.na(nasalDesign$Viral.Type.at.Visit2))))
+length(remIndex) # lost 11 out of 374 samples
+dim(nasalDesign)
+
+#######
+# corrected version
+# batch effects to remove: lib counts, cell %s, virus status, and visit
+#######
+rbeMM<-model.matrix(~ Nasal.Lymphocyte.Count + Nasal.Eosinophil.Count + Nasal.Macrophage.Count + Nasal.Epithelial.Count + Nasal.Squamous.Count + libCounts + Viral.Type.at.Visit2 + Visit, data=nasalDesign[-remIndex,])
+dim(rbeMM)
+rbeMM[1:3,]
+
+keepmm<-model.matrix(~Case.or.Control.Status.Original, data=nasalDesign[-remIndex,])
+dim(keepmm)
+keepmm[1:3,]
+
+# remove batch effect at gene set level (corrected version)
+library(limma)
+nasalGSC<-removeBatchEffect(nasalGS[,-remIndex], covariates=rbeMM[,-1], design=keepmm)
+
+dim(nasalGSC)
+nasalGSC[1:5,1:5]
+
+# also need to subset the nasal design file
+nasalDesignC<-nasalDesign[-remIndex,]
+all(colnames(nasalGSC)==nasalDesignC$library.sampleId)
+
+
+######
+# now remove zero modules
+######
+remMods<-c("neut0","lymp0","eos0","mac0","epi0","squa0","unma0")
+nasalGSC<-nasalGSC[-which(rownames(nasalGSC) %in% remMods),]
+
+```
+
+## Subset to Visit A and B (remove cases on steroids)
+
+```{r subsetVisit}
+
+# need to remove visit 0 and visit B cases on steroids
+remLibs<-c(which(nasalDesignC$Visit=="Visit 0"), which(nasalDesignC$CSteroid.Start.Relative.to.Visit=="Before"))
+length(remLibs)
+
+nasalDesignC<-nasalDesignC[-remLibs,]
+nasalGSC<-nasalGSC[,-remLibs]
+all(colnames(nasalGSC)==nasalDesignC$library.sampleId)
+
+# make sure these are all gone now - yes
+c(which(nasalDesignC$Visit=="Visit 0"), which(nasalDesignC$CSteroid.Start.Relative.to.Visit=="Before"))
+
+```
+
+## Split between Paired and Unpaired
+
+Does this need to be determine before we remove cases on steroids?
+
+```{r splitPair}
+
+# find the paired samples (one visit is case and one visit is control)
+uniIndivs<-as.character(unique(nasalDesignC$Subject.Identifier.for.the.Study))
+pairedIndivs<-c()
+unpairedIndivs<-c()
+for (i in 1:length(uniIndivs))
+{
+  curIndiv<-uniIndivs[i]
+  curIndex<-which(curIndiv==nasalDesignC$Subject.Identifier.for.the.Study & nasalDesignC$Visit=="Visit a")
+  if (all(c("Case","Control") %in% nasalDesignC$Case.or.Control.Status.Original[curIndex]))
+    pairedIndivs<-c(pairedIndivs, curIndiv)
+  else
+    unpairedIndivs<-c(unpairedIndivs, curIndiv)
+}
+length(pairedIndivs) # should be 18 - I got 19 - that's actually right
+length(unpairedIndivs) # 84
+
+# paired
+nasalDesignCP<-nasalDesignC[which(nasalDesignC$Subject.Identifier.for.the.Study %in% pairedIndivs),]
+nasalGSCP<-nasalGSC[,which(nasalDesignC$Subject.Identifier.for.the.Study %in% pairedIndivs)]
+all(nasalDesignCP$library.sampleId==colnames(nasalGSCP))
+
+# unpaired
+nasalDesignCUP<-nasalDesignC[which(nasalDesignC$Subject.Identifier.for.the.Study %in% unpairedIndivs),]
+nasalGSCUP<-nasalGSC[,which(nasalDesignC$Subject.Identifier.for.the.Study %in% unpairedIndivs)]
+all(nasalDesignCUP$library.sampleId==colnames(nasalGSCUP))
+
+```
+
+## Make Plots
+
+```{r makePlots}
+
+# get the order of the sig modules
+ttStatus<-read.csv(file=file.path(dataDir, "tt_Nasal_Case_v_Control.csv"), row.names=1)
+
+
+######
+# mean SE plots
+######
+# need to summarize the data and then can plot mean/SE bars
+allNasalVals<-c()
+for (i in 1:nrow(nasalGSC))
+{
+#  curMod<-"unma27"
+  curMod<-rownames(nasalGSC)[i]
+  curIndex<-which(rownames(nasalGSC)==curMod)
+  if (length(grep("unma", curMod))==1)
+  {
+    modName<-paste("m", substr(curMod, 5, nchar(curMod)), ".n",sep="")
+  }
+  else
+  {
+    modName<-paste(curMod,".n",sep="")
+  }
+
+  # need to combine everything and make panels
+  # case/control, full/paired/unpaired, value
+  fullValsC<-cbind(nasalGSC[curMod,], nasalDesignC$Case.or.Control.Status.Original, rep("Full", nrow(nasalDesignC)))
+  
+  pairedValsC<-cbind(nasalGSCP[curMod,], nasalDesignCP$Case.or.Control.Status.Original, rep("Paired", nrow(nasalDesignCP)))
+
+  unpairedValsC<-cbind(nasalGSCUP[curMod,], nasalDesignCUP$Case.or.Control.Status.Original, rep("Unpaired", nrow(nasalDesignCUP)))
+  
+  # now put all together
+  allVals<-rbind(fullValsC, pairedValsC, unpairedValsC)
+  allVals<-as.data.frame(allVals)
+  colnames(allVals)<-c("Exp","Status","Category")
+  allVals$Exp<-as.numeric(as.character(allVals$Exp))
+  allVals$Status<-factor(as.character(allVals$Status), levels=c("Control","Case"))
+  dim(allVals)
+
+  # now calculate the mean and SE/CI for each - this is treating everything as independent (which is not true)
+  allMeans<-tapply(allVals$Exp, list(allVals$Status,allVals$Category), mean)
+  allSD<-tapply(allVals$Exp, list(allVals$Status,allVals$Category), sd)
+  allLen<-tapply(allVals$Exp, list(allVals$Status,allVals$Category), length)
+  allSE<-allSD/sqrt(allLen)
+  
+  # convert into data frame
+  allSum<-cbind(as.vector(allMeans), c(rep("Full",2),rep("Paired",2),rep("Unpaired",2)), rep(c("Control","Case"),3), as.vector(allSE)*2, rep(curMod, 6))
+  allSum<-as.data.frame(allSum)
+  colnames(allSum)<-c("Mean","Category","Status","CI","Module")
+  allSum$Mean<-as.numeric(as.character(allSum$Mean))
+  allSum$CI<-as.numeric(as.character(allSum$CI))
+  allSum$Status<-factor(as.character(allSum$Status), levels=c("Control","Case"))
+
+  allNasalVals<-rbind(allNasalVals, allSum)  
+    
+  png(file=paste(file.path(resultsDir), "Nasal_ModulePlots_AcrossDifferentSets_meanSE_onlyAdjusted_", curMod, ".png", sep=""), units="in", width=5, height=3.5, res=300, pointsize=10)
+  pd<-position_dodge(0.4)
+  g1<-ggplot(allSum, aes(x=1, y=Mean, color=Status)) + 
+    geom_errorbar(aes(ymin=Mean-CI, ymax=Mean+CI, color=Status, group=Status), width=.3, position=pd) +
+    geom_point(position=pd, aes(group=Status, color=Status), size=3) + facet_grid(. ~ Category)+theme_bw() + ylab("Log2 Normalized Expression") + xlab("") + scale_color_manual(values=c("black","red")) + ggtitle(modName) + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+  print(g1)
+  dev.off()
+}
+
+# 1/14/19 svg for paper
+######
+# mean SE plots
+######
+# need to summarize the data and then can plot mean/SE bars
+library(ggplot2)
+allNasalVals<-c()
+for (i in 1:nrow(nasalGSC))
+{
+#  curMod<-"unma27"
+  curMod<-rownames(nasalGSC)[i]
+  curIndex<-which(rownames(nasalGSC)==curMod)
+  if (length(grep("unma", curMod))==1)
+  {
+    modName<-paste("m", substr(curMod, 5, nchar(curMod)), ".n",sep="")
+  }
+  else
+  {
+    modName<-paste(curMod,".n",sep="")
+  }
+
+  # need to combine everything and make panels
+  # case/control, full/paired/unpaired, value
+  fullValsC<-cbind(nasalGSC[curMod,], nasalDesignC$Case.or.Control.Status.Original, rep("Full", nrow(nasalDesignC)))
+  
+  pairedValsC<-cbind(nasalGSCP[curMod,], nasalDesignCP$Case.or.Control.Status.Original, rep("Paired", nrow(nasalDesignCP)))
+
+  unpairedValsC<-cbind(nasalGSCUP[curMod,], nasalDesignCUP$Case.or.Control.Status.Original, rep("Unpaired", nrow(nasalDesignCUP)))
+  
+  # now put all together
+  allVals<-rbind(fullValsC, pairedValsC, unpairedValsC)
+  allVals<-as.data.frame(allVals)
+  colnames(allVals)<-c("Exp","Status","Category")
+  allVals$Exp<-as.numeric(as.character(allVals$Exp))
+  allVals$Status<-factor(as.character(allVals$Status), levels=c("Control","Case"))
+  dim(allVals)
+
+  # now calculate the mean and SE/CI for each - this is treating everything as independent (which is not true)
+  allMeans<-tapply(allVals$Exp, list(allVals$Status,allVals$Category), mean)
+  allSD<-tapply(allVals$Exp, list(allVals$Status,allVals$Category), sd)
+  allLen<-tapply(allVals$Exp, list(allVals$Status,allVals$Category), length)
+  allSE<-allSD/sqrt(allLen)
+  
+  # convert into data frame
+  allSum<-cbind(as.vector(allMeans), c(rep("Full",2),rep("Paired",2),rep("Unpaired",2)), rep(c("Control","Case"),3), as.vector(allSE)*2, rep(curMod, 6))
+  allSum<-as.data.frame(allSum)
+  colnames(allSum)<-c("Mean","Category","Status","CI","Module")
+  allSum$Mean<-as.numeric(as.character(allSum$Mean))
+  allSum$CI<-as.numeric(as.character(allSum$CI))
+  allSum$Status<-factor(as.character(allSum$Status), levels=c("Control","Case"))
+
+  allNasalVals<-rbind(allNasalVals, allSum)  
+    
+  svg(file=paste(file.path(resultsDir), "Nasal_ModulePlots_AcrossDifferentSets_meanSE_onlyAdjusted_", curMod, ".svg", sep=""), width=5, height=3.5, pointsize=10)
+  pd<-position_dodge(0.4)
+  g1<-ggplot(allSum, aes(x=1, y=Mean, color=Status)) + 
+    geom_errorbar(aes(ymin=Mean-CI, ymax=Mean+CI, color=Status, group=Status), width=.3, position=pd) +
+    geom_point(position=pd, aes(group=Status, color=Status), size=3) + facet_grid(. ~ Category)+theme_bw() + ylab("Log2 Normalized Expression") + xlab("") + scale_color_manual(values=c("black","red")) + ggtitle(modName) + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+  print(g1)
+  dev.off()
+}
+
+# now make a plot of everything
+allNasalVals$Module<-factor(as.character(allNasalVals$Module), levels=rownames(ttStatus)[52:1])
+
+# this currently doesn't look very good because the range of mean values totally overrides any difference between case and control for individual modules
+pd<-position_dodge(0.4)
+g1<-ggplot(allNasalVals, aes(x=Mean, y=Module, color=Status)) + 
+    #geom_errorbar(aes(xmin=Mean-CI, xmax=Mean+CI, color=Status, group=Status), width=.3, position=pd) +
+    geom_point(position=pd, aes(group=Status, color=Status), size=3) + facet_grid(. ~ Category)+theme_bw() + xlab("Log2 Normalized Expression") + ylab("") + scale_color_manual(values=c("black","red")) + ggtitle("Nasal")
+
+```

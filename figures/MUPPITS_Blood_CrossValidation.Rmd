@@ -1,0 +1,195 @@
+---
+title: "Cross-Validation for MUPPITS Blood Samples"
+author: "Elizabeth Whalen"
+date: "11/24/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in Data
+
+```{r readData}
+
+dataDir <- "../data"
+resultsDir <- "../results"
+
+bloodGS<-read.csv(file=file.path(dataDir, "tempusGeneSets_387samples.csv"), row.names=1)
+bloodDesign<-read.csv(file=file.path(dataDir, "tempus_design_all4Phases_387samples_update.csv"))
+all(colnames(bloodGS)==bloodDesign$LibraryID)
+
+```
+
+## Visits A & B
+
+```{r visitAB}
+
+visitIndex<-which(bloodDesign$Visit %in% c("Visit a","Visit b"))
+
+bloodDesignAB<-bloodDesign[visitIndex,]
+bloodGSAB<-bloodGS[,visitIndex]
+all(bloodDesignAB$library.sampleId==colnames(bloodGSAB))
+
+# need to remove those that are csteroid before
+remIndex<-which(bloodDesignAB$CSteroid.Start.Relative.to.Visit=="Before")
+bloodDesignAB<-bloodDesignAB[-remIndex,]
+bloodGSAB<-bloodGSAB[,-remIndex]
+all(bloodDesignAB$library.sampleId==colnames(bloodGSAB))
+
+# remove mod 0s
+remMods<-c("neut0","lymp0","eos0","mono0","unma0")
+bloodGSAB<-bloodGSAB[-which(rownames(bloodGSAB) %in% remMods),]
+
+bloodDesignAB$Case.or.Control.Status.Original<-factor(as.character(bloodDesignAB$Case.or.Control.Status.Original), levels=c("Control","Case"))
+bloodDesignAB$Visit<-factor(as.character(bloodDesignAB$Visit), levels=c("Visit a", "Visit b"))
+bloodDesignAB$Viral.Type.at.Visit2<-factor(as.character(bloodDesignAB$Viral.Type.at.Visit2), levels=c("Non-viral","Viral"))
+
+curMM<-model.matrix(~Case.or.Control.Status.Original + Viral.Type.at.Visit2 + Blood.Lymphocyte.Differential + Blood.Eosinophil.Differential + Blood.Monocyte.Differential + Blood.Basophil.Differential + libCounts + Visit, data=bloodDesignAB)
+# make sure the model matrix looks as expected (sometimes R treats numeric as factors!)
+curMM[1:3,]
+
+# this is fast because don't have many gene sets
+if (nrow(curMM)==nrow(bloodDesignAB))
+{
+  corfitABgs<-duplicateCorrelation(bloodGSAB, curMM, block=bloodDesignAB$Subject.Identifier.for.the.Study)
+  corfitABgs$consensus
+
+  fitABgs<-lmFit(bloodGSAB, curMM, block=bloodDesignAB$Subject.Identifier.for.the.Study, correlation=corfitABgs$consensus)
+  fitABgs<-eBayes(fitABgs)
+}
+if (nrow(curMM) < nrow(bloodDesignAB))
+{
+  remIndex<-which(!(rownames(bloodDesignAB) %in% rownames(curMM)))
+
+  corfitABgs<-duplicateCorrelation(bloodGSAB[,-remIndex], curMM, block=bloodDesignAB$Subject.Identifier.for.the.Study[-remIndex])
+  corfitABgs$consensus
+
+  fitABgs<-lmFit(bloodGSAB[,-remIndex], curMM, block=bloodDesignAB$Subject.Identifier.for.the.Study[-remIndex], correlation=corfitABgs$consensus)
+  fitABgs<-eBayes(fitABgs)
+}
+
+ttFullAB<-topTable(fitABgs, coef=2, number=nrow(bloodGSAB), sort.by="p") # case vs. control
+sum(ttFullAB$adj.P.Val < 0.05) # 0
+ttFullAB[1:5,]
+
+
+
+
+# now need to subset the data - take 80% of data
+length(unique(bloodDesignAB$Subject.Identifier.for.the.Study)) # have 105 people out of 256 samples for visit A
+dim(bloodDesignAB)
+# for each iteration take 84 individuals (80%)
+uniIndiv<-unique(as.character(bloodDesignAB$Subject.Identifier.for.the.Study))
+modelListAB<-list()
+for (i in 1:200)
+{
+  keepIndiv<-sample(uniIndiv, size=84, replace=FALSE)
+  keepIndex<-which(bloodDesignAB$Subject.Identifier.for.the.Study %in% keepIndiv)
+  tempDesignAB<-bloodDesignAB[keepIndex,]
+  tempGSAB<-bloodGSAB[,keepIndex]
+  all(tempDesignAB$library.sampleId==colnames(tempGSAB))
+  # now run model
+  
+  curMM<-model.matrix(~Case.or.Control.Status.Original + Viral.Type.at.Visit2 + Blood.Lymphocyte.Differential + Blood.Eosinophil.Differential + Blood.Monocyte.Differential + Blood.Basophil.Differential + libCounts + Visit, data=tempDesignAB)
+  
+  if (nrow(curMM)==nrow(tempDesignAB))
+  {
+    tcorfitABgs<-duplicateCorrelation(tempGSAB, curMM, block=tempDesignAB$Subject.Identifier.for.the.Study)
+
+    tfitABgs<-lmFit(tempGSAB, curMM, block=tempDesignAB$Subject.Identifier.for.the.Study, correlation=tcorfitABgs$consensus)
+    tfitABgs<-eBayes(tfitABgs)
+  }
+  if (nrow(curMM) < nrow(tempDesignAB))
+  {
+    remIndex<-which(!(rownames(tempDesignAB) %in% rownames(curMM)))
+
+    tcorfitABgs<-duplicateCorrelation(tempGSAB[,-remIndex], curMM, block=tempDesignAB$Subject.Identifier.for.the.Study[-remIndex])
+
+    tfitABgs<-lmFit(tempGSAB[,-remIndex], curMM, block=tempDesignAB$Subject.Identifier.for.the.Study[-remIndex], correlation=tcorfitABgs$consensus)
+    tfitABgs<-eBayes(tfitABgs)
+  }
+  modelListAB[[i]]<-topTable(tfitABgs, coef=2, number=nrow(tempGSAB), sort.by="p") # case vs. control
+  if (i %in% c(50,100,150))
+    print(i)
+}
+
+#save(modelListAB, list="modelListAB", file=file.path(dataDir, "modelList_blood_visitAB.RData"))
+#load(file=file.path(dataDir, "modelList_blood_visitAB.RData")
+
+# now see what's sig and maybe FC values?
+sigModsAB<-unlist(lapply(modelListAB, function(x) {rownames(x)[which(x$adj.P.Val < 0.05)]}))
+table(sigModsAB)/200
+
+barplot(table(sigModsAB)/200, las=2)
+for (i in seq(0,1,0.2))
+  abline(h=i, lty=3)
+
+bpDataAB<-sort(table(sigModsAB)/200, decreasing = TRUE)
+names(bpDataAB)
+match(rownames(ttFullAB)[which(ttFullAB$adj.P.Val < 0.05)], names(bpDataAB))
+curCol<-rep("gray", length(bpDataAB))
+curCol[match(rownames(ttFullAB)[which(ttFullAB$adj.P.Val < 0.05)], names(bpDataAB))]<-"blue"
+# change the names
+oldNames<-names(bpDataAB)
+newNames<-c()
+for (i in 1:length(oldNames))
+{
+  if (length(grep("unma",oldNames[i]))==1)
+  {
+    newNames<-c(newNames, paste("m",substr(oldNames[i], 5, nchar(oldNames[i])), ".b", sep=""))
+  }
+  else
+  {
+    newNames<-c(newNames, paste(oldNames[i], ".b", sep=""))
+  }
+}
+names(bpDataAB)<-newNames
+png(file=file.path(resultsDir, "blood_visitAB_proportionSig.png"), res=600, pointsize=10, units="in", width=4, height=4)
+barplot(bpDataAB, las=2, col=curCol, ylab="Proportion of Bootstrap Where FDR < 0.05", main="Visits A & B", ylim=c(0,1))
+for (i in seq(0,1,0.2))
+  abline(h=i, lty=3)
+legend(x=1, y=0.9, fill=c("blue","gray"), legend=c("Sig in Full Model","Not Sig in Full Model"), cex=0.9)
+dev.off()
+
+# now make plot of FC?
+logFCmatAB<-matrix(unlist(lapply(modelListAB, function(x) {
+  newIndex<-match(rownames(nasalGSAB), rownames(x))
+  return(x$logFC[newIndex])
+})), nrow=52, ncol=200)
+rownames(logFCmatAB)<-rownames(nasalGSAB)
+
+# now make boxplot
+makeLongMatAB<-c()
+for (i in 1:nrow(logFCmatAB))
+{
+  makeLongMatAB<-rbind(makeLongMatAB, cbind(logFCmatAB[i,], rep(rownames(logFCmatAB)[i], 200)))
+}
+makeLongMatAB<-as.data.frame(makeLongMatAB)
+colnames(makeLongMatAB)<-c("logFC","geneSet")
+makeLongMatAB$logFC<-as.numeric(as.character(makeLongMatAB$logFC))
+boxplot(logFC ~ geneSet, data = makeLongMatAB, las=2)
+for (i in seq(-1,1,0.2))
+  abline(h=i, lty=3)
+
+# order the gene sets based on sig from full data set
+# change the gene set names
+newGS<-as.character(makeLongMatAB$geneSet)
+newGS<-paste(newGS,".b",sep="")
+newGS[grep("unma",newGS)]<-paste("m", substr(newGS[grep("unma",newGS)],5,nchar(newGS[grep("unma",newGS)])), sep="")
+table(newGS)
+makeLongMatAB$geneSet<-newGS
+  
+newLevels<-rownames(ttFullAB)
+newLevels<-paste(newLevels,".b",sep="")
+newLevels[grep("unma",newLevels)]<-paste("m", substr(newLevels[grep("unma",newLevels)],5,nchar(newLevels[grep("unma",newLevels)])), sep="")
+
+png(file=file.path(resultsDir, "blood_visitAB_logFCrange.png"), res=600, pointsize=8, units="in", width=6, height=4)
+makeLongMatAB$geneSet<-factor(as.character(makeLongMatAB$geneSet), levels=newLevels)
+boxplot(logFC ~ geneSet, data = makeLongMatAB, las=2, ylab="log2(FC)", main="Visits A & B")
+for (i in seq(-1,1,0.2))
+  abline(h=i, lty=3)
+dev.off()
+
+```

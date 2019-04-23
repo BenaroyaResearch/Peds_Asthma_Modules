@@ -1,0 +1,165 @@
+---
+title: "ANOVA MUPPITS Nasal Across Status and Viral Type"
+author: "Elizabeth Whalen"
+date: "7/31/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in Data
+
+```{r readData}
+
+dataDir <- "../data"
+resultsDir <- "../results"
+
+#load(file="/Users/ewhalen/Box Sync/Projects/ICAC/MUPPITS/nasal_Combine4Phases/totalNasalVoom.RData")
+nasalDesign<-read.csv(file=file.path(dataDir, "totalNasalDesign.csv"))
+nasalGS<-read.csv(file=file.path(dataDir, "totalGeneSetData_allVisits.csv"), row.names=1)
+
+#all(colnames(totalNasalVoom)==nasalDesign$library.sampleId)
+all(colnames(nasalGS)==nasalDesign$library.sampleId)
+
+```
+
+## Visit A
+
+```{r VisitA}
+
+#visitIndex<-which(nasalDesign$Visit=="Visit a")
+visitIndex<-which(nasalDesign$Visit=="Visit a" | nasalDesign$Visit=="Visit b" & nasalDesign$CSteroid.Start.Relative.to.Visit != "Before")
+
+nasalDesignA<-nasalDesign[visitIndex,]
+#nasalVoomA<-totalNasalVoom[,visitIndex]
+#all(nasalDesignA$library.sampleId==colnames(nasalVoomA))
+nasalGSA<-nasalGS[,visitIndex]
+all(nasalDesignA$library.sampleId==colnames(nasalGSA))
+
+nasalDesignA$Viral.Type.at.VisitSummary<-as.character(nasalDesignA$Viral.Type.at.Visit)
+nasalDesignA$Viral.Type.at.VisitSummary[which(nasalDesignA$Viral.Type.at.VisitSummary=="RV-A")]<-"VirusPos"
+nasalDesignA$Viral.Type.at.VisitSummary[which(nasalDesignA$Viral.Type.at.VisitSummary=="RV-C")]<-"VirusPos"
+nasalDesignA$Viral.Type.at.VisitSummary[which(nasalDesignA$Viral.Type.at.VisitSummary=="Other Virus")]<-"VirusPos"
+table(nasalDesignA$Viral.Type.at.VisitSummary)
+nasalDesignA$Viral.Type.at.VisitSummary<-factor(nasalDesignA$Viral.Type.at.VisitSummary, levels=c("Non-viral","VirusPos"))
+
+nasalDesignA$Case.or.Control.Status.Original<-factor(as.character(nasalDesignA$Case.or.Control.Status.Original), levels=c("Control","Case"))
+
+nasalDesignA$StatusViralType<-paste(as.character(nasalDesignA$Case.or.Control.Status.Original), as.character(nasalDesignA$Viral.Type.at.VisitSummary))
+nasalDesignA$StatusViralType<-factor(nasalDesignA$StatusViralType, levels=c("Control Non-viral","Control VirusPos","Case Non-viral","Case VirusPos"))
+table(nasalDesignA$StatusViralType)
+
+nasalDesignA$Visit<-factor(as.character(nasalDesignA$Visit), levels=c("Visit a","Visit b"))
+
+#curMM<-model.matrix(~StatusViralType + Nasal.Lymphocyte.Count + Nasal.Eosinophil.Count + Nasal.Macrophage.Count + Nasal.Epithelial.Count + Nasal.Squamous.Count + libCounts, data=nasalDesignA)
+curMM<-model.matrix(~StatusViralType + Nasal.Lymphocyte.Count + Nasal.Eosinophil.Count + Nasal.Macrophage.Count + Nasal.Epithelial.Count + Nasal.Squamous.Count + libCounts + Visit, data=nasalDesignA)
+# make sure the model matrix looks as expected (sometimes R treats numeric as factors!)
+curMM[1:3,]
+
+# this is fast because don't have many gene sets
+if (nrow(curMM)==nrow(nasalDesignA))
+{
+  corfitAgs<-duplicateCorrelation(nasalGSA, curMM, block=nasalDesignA$Subject.Identifier.for.the.Study)
+  corfitAgs$consensus
+
+  fitAgs<-lmFit(nasalGSA, curMM, block=nasalDesignA$Subject.Identifier.for.the.Study, correlation=corfitAgs$consensus)
+  fitAgs<-eBayes(fitAgs)
+}
+if (nrow(curMM) < nrow(nasalDesignA))
+{
+  remIndex<-which(!(rownames(nasalDesignA) %in% rownames(curMM)))
+
+  corfitAgs<-duplicateCorrelation(nasalGSA[,-remIndex], curMM, block=nasalDesignA$Subject.Identifier.for.the.Study[-remIndex])
+  corfitAgs$consensus
+
+  fitAgs<-lmFit(nasalGSA[,-remIndex], curMM, block=nasalDesignA$Subject.Identifier.for.the.Study[-remIndex], correlation=corfitAgs$consensus)
+  fitAgs<-eBayes(fitAgs)
+}
+
+ttAnova<-topTable(fitAgs, coef=2:4, number=nrow(nasalGSA), sort.by="F")
+sum(ttAnova$adj.P.Val < 0.05)
+
+# now want to add columns for all 6 2-way comparisons
+tt1<-topTable(fitAgs, coef=2, number=nrow(nasalGSA), sort.by="p") # control virus pos vs. control non-viral
+tt2<-topTable(fitAgs, coef=3, number=nrow(nasalGSA), sort.by="p") # case non-viral vs. control non-viral
+tt3<-topTable(fitAgs, coef=4, number=nrow(nasalGSA), sort.by="p") # case virus pos vs. control non-viral
+
+
+# set up control virus pos as ref
+nasalDesignA$StatusViralType<-factor(as.character(nasalDesignA$StatusViralType), levels=c("Control VirusPos","Control Non-viral","Case Non-viral","Case VirusPos"))
+
+curMM<-model.matrix(~StatusViralType + Nasal.Lymphocyte.Count + Nasal.Eosinophil.Count + Nasal.Macrophage.Count + Nasal.Epithelial.Count + Nasal.Squamous.Count + libCounts, data=nasalDesignA)
+#curMM<-model.matrix(~StatusViralType + Nasal.Lymphocyte.Count + Nasal.Eosinophil.Count + Nasal.Macrophage.Count + Nasal.Epithelial.Count + Nasal.Squamous.Count + libCounts + Visit, data=nasalDesignA)
+# make sure the model matrix looks as expected (sometimes R treats numeric as factors!)
+curMM[1:3,]
+
+  remIndex<-which(!(rownames(nasalDesignA) %in% rownames(curMM)))
+
+  corfitAgs2<-duplicateCorrelation(nasalGSA[,-remIndex], curMM, block=nasalDesignA$Subject.Identifier.for.the.Study[-remIndex])
+  corfitAgs2$consensus
+
+  fitAgs2<-lmFit(nasalGSA[,-remIndex], curMM, block=nasalDesignA$Subject.Identifier.for.the.Study[-remIndex], correlation=corfitAgs2$consensus)
+  fitAgs2<-eBayes(fitAgs2)
+  
+tt4<-topTable(fitAgs2, coef=3, number=nrow(nasalGSA), sort.by="p") # case non-viral vs. control virus pos
+tt5<-topTable(fitAgs2, coef=4, number=nrow(nasalGSA), sort.by="p") # case virus pos vs. control virus pos
+
+
+# set up case non-viral as ref
+nasalDesignA$StatusViralType<-factor(as.character(nasalDesignA$StatusViralType), levels=c("Case Non-viral","Control VirusPos","Control Non-viral","Case VirusPos"))
+
+curMM<-model.matrix(~StatusViralType + Nasal.Lymphocyte.Count + Nasal.Eosinophil.Count + Nasal.Macrophage.Count + Nasal.Epithelial.Count + Nasal.Squamous.Count + libCounts, data=nasalDesignA)
+#curMM<-model.matrix(~StatusViralType + Nasal.Lymphocyte.Count + Nasal.Eosinophil.Count + Nasal.Macrophage.Count + Nasal.Epithelial.Count + Nasal.Squamous.Count + libCounts + Visit, data=nasalDesignA)
+# make sure the model matrix looks as expected (sometimes R treats numeric as factors!)
+curMM[1:3,]
+
+  remIndex<-which(!(rownames(nasalDesignA) %in% rownames(curMM)))
+
+  corfitAgs3<-duplicateCorrelation(nasalGSA[,-remIndex], curMM, block=nasalDesignA$Subject.Identifier.for.the.Study[-remIndex])
+  corfitAgs3$consensus
+
+  fitAgs3<-lmFit(nasalGSA[,-remIndex], curMM, block=nasalDesignA$Subject.Identifier.for.the.Study[-remIndex], correlation=corfitAgs3$consensus)
+  fitAgs3<-eBayes(fitAgs3)
+  
+tt6<-topTable(fitAgs3, coef=4, number=nrow(nasalGSA), sort.by="p") # case virus pos vs. case non-viral 
+
+
+####
+# now combine everything
+####
+curOrder<-rownames(ttAnova)
+
+tt1<-tt1[match(curOrder, rownames(tt1)),]
+all(curOrder==rownames(tt1))
+
+tt2<-tt2[match(curOrder, rownames(tt2)),]
+all(curOrder==rownames(tt2))
+
+tt3<-tt3[match(curOrder, rownames(tt3)),]
+all(curOrder==rownames(tt3))
+
+tt4<-tt4[match(curOrder, rownames(tt4)),]
+all(curOrder==rownames(tt4))
+
+tt5<-tt5[match(curOrder, rownames(tt5)),]
+all(curOrder==rownames(tt5))
+
+tt6<-tt6[match(curOrder, rownames(tt6)),]
+all(curOrder==rownames(tt6))
+
+allResults<-cbind(ttAnova, tt1[, c(1,4,5)], tt2[, c(1,4,5)], tt3[, c(1,4,5)], tt4[, c(1,4,5)], tt5[, c(1,4,5)], tt6[, c(1,4,5)])
+
+# now change column names
+colnames(allResults)[8:10]<-paste("ControlVirusPos_vs_ControlNonViral", colnames(allResults)[8:10], sep="_")
+colnames(allResults)[11:13]<-paste("CaseNonViral_vs_ControlNonViral", colnames(allResults)[11:13], sep="_")
+colnames(allResults)[14:16]<-paste("CaseVirusPos_vs_ControlNonViral", colnames(allResults)[14:16], sep="_")
+colnames(allResults)[17:19]<-paste("CaseNonViral_vs_ControlVirusPos", colnames(allResults)[17:19], sep="_")
+colnames(allResults)[20:22]<-paste("CaseVirusPos_vs_ControlVirusPos", colnames(allResults)[20:22], sep="_")
+colnames(allResults)[23:25]<-paste("CaseVirusPos_vs_CaseNonViral", colnames(allResults)[23:25], sep="_")
+
+write.csv(allResults, file=file.path(resultsDir, "Nasal_Anova_CaseControl_ViralType.csv"))
+
+```
+

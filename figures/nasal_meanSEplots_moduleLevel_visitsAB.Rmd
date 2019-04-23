@@ -1,0 +1,492 @@
+---
+title: "MUPPITS Nasal Mean/SE Plots Module Level Visits A&B"
+author: "Elizabeth Whalen"
+date: "11/17/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in Data
+
+```{r readData}
+
+dataDir <- "../data"
+resultsDir <- "../results"
+
+#load(file="/Users/ewhalen/Box Sync/Projects/ICAC/MUPPITS/nasal_Combine4Phases/BestVersion/nasalVoom_374samples.RData")
+#nasalDesign<-read.csv(file=file.path(dataDir, "nasalDesign_374samples.csv"))
+nasalDesign<-read.csv(file=file.path(dataDir, "totalNasalDesign_update_clinical variable groups.csv"), skip=4)
+nasalGS<-read.csv(file=file.path(dataDir, "nasalGeneSets_374samples.csv"), row.names=1)
+
+#all(colnames(nasalVoom)==nasalDesign$library.sampleId)
+all(colnames(nasalGS)==nasalDesign$library.sampleId)
+
+```
+
+## Remove Batch Effects
+
+```{r removeBatchEffects}
+
+# remove visit 0 and then remove batch effects
+rem0<-which(nasalDesign$Visit=="Visit 0")
+nasalDesignAB<-nasalDesign[-rem0,]
+nasalGSAB<-nasalGS[,-rem0]
+all(nasalDesignAB$library.sampleId==colnames(nasalGSAB))
+
+remIndex<-unique(c(which(is.na(nasalDesignAB$Nasal.Lymphocyte.Count)), which(is.na(nasalDesignAB$Nasal.Macrophage.Count)), which(is.na(nasalDesignAB$Nasal.Eosinophil.Count)), which(is.na(nasalDesignAB$Nasal.Epithelial.Count)), which(is.na(nasalDesignAB$Nasal.Squamous.Count)), which(is.na(nasalDesignAB$libCounts)), which(is.na(nasalDesignAB$Viral.Type.at.Visit2))))
+length(remIndex) # lost 6 out of 280 samples
+dim(nasalDesignAB)
+
+nasalDesignAB$Visit<-factor(as.character(nasalDesignAB$Visit), levels=c("Visit a","Visit b"))
+nasalDesignAB$Case.or.Control.Status.Original<-factor(as.character(nasalDesignAB$Case.or.Control.Status.Original), levels=c("Control","Case"))
+
+rbeMM<-model.matrix(~ Nasal.Lymphocyte.Count + Nasal.Eosinophil.Count + Nasal.Macrophage.Count + Nasal.Epithelial.Count + Nasal.Squamous.Count + libCounts + Visit, data=nasalDesignAB[-remIndex,])
+dim(rbeMM)
+rbeMM[1:3,]
+
+keepmm<-model.matrix(~Case.or.Control.Status.Original + Viral.Type.at.Visit2, data=nasalDesignAB[-remIndex,])
+dim(keepmm)
+keepmm[1:3,]
+
+# remove batch effect at gene set level
+nasalGSABrbe<-removeBatchEffect(nasalGSAB[,-remIndex], covariates=rbeMM[,-1], design=keepmm)
+
+dim(nasalGSABrbe)
+nasalGSABrbe[1:5,1:5]
+
+# also need to subset the nasal design file
+nasalDesignABRBE<-nasalDesignAB[-remIndex,]
+all(colnames(nasalGSABrbe)==nasalDesignABRBE$library.sampleId)
+
+
+# also remove virus type as a batch effect
+rbeMMV<-model.matrix(~ Nasal.Lymphocyte.Count + Nasal.Eosinophil.Count + Nasal.Macrophage.Count + Nasal.Epithelial.Count +  Nasal.Squamous.Count + libCounts + Visit + Viral.Type.at.Visit2, data=nasalDesignAB[-remIndex,])
+dim(rbeMMV)
+rbeMMV[1:3,]
+
+keepmmV<-model.matrix(~Case.or.Control.Status.Original, data=nasalDesignAB[-remIndex,])
+dim(keepmmV)
+keepmmV[1:3,]
+
+# remove batch effect at gene set level
+nasalGSABrbeV<-removeBatchEffect(nasalGSAB[,-remIndex], covariates=rbeMMV[,-1], design=keepmmV)
+
+dim(nasalGSABrbeV)
+nasalGSABrbeV[1:5,1:5]
+
+# make sure everything matches
+all(colnames(nasalGSABrbeV)==nasalDesignABRBE$library.sampleId)
+
+```
+
+## Remove Cases on Steroids
+
+```{r removeCaseOnCS}
+
+remCS<-which(nasalDesignABRBE$CSteroid.Start.Relative.to.Visit=="Before")
+nasalGSABrbe<-nasalGSABrbe[,-remCS]
+nasalGSABrbeV<-nasalGSABrbeV[,-remCS]
+nasalDesignABRBE<-nasalDesignABRBE[-remCS,]
+all(nasalDesignABRBE$library.sampleId==colnames(nasalGSABrbe))
+all(nasalDesignABRBE$library.sampleId==colnames(nasalGSABrbeV))
+
+```
+
+## Remove Zero Modules
+
+```{r removeZeroMods}
+
+remMods<-c("neut0","lymp0","eos0","mac0","epi0","squa0","unma0")
+nasalGSABrbe<-nasalGSABrbe[-which(rownames(nasalGSABrbe) %in% remMods),]
+nasalGSABrbeV<-nasalGSABrbeV[-which(rownames(nasalGSABrbeV) %in% remMods),]
+
+```
+
+## Mean/SE plots
+
+### Visits A & B: case vs. control
+
+```{r visitABcaseControl}
+
+# visit A: case vs. control
+
+table(nasalDesignABRBE$Case.or.Control.Status.Original)
+
+modNames<-rownames(nasalGSABrbe)
+modNames[22:52]<-paste("m",1:31,sep="")
+modNames<-paste(modNames,".n",sep="")
+
+for (i in 1:nrow(nasalGSABrbeV))
+{
+  curMod<-rownames(nasalGSABrbeV)[i]
+  curFN<-paste(curMod, ".png", sep="")
+
+  statMean<-tapply(nasalGSABrbeV[i,], nasalDesignABRBE$Case.or.Control.Status.Original, mean)  
+  statSD<-tapply(nasalGSABrbeV[i,], nasalDesignABRBE$Case.or.Control.Status.Original, sd)
+  statSE<-statSD/sqrt(tapply(nasalGSABrbeV[i,], nasalDesignABRBE$Case.or.Control.Status.Original, length))
+  upLim<-2^(statMean + 1.96*statSE)
+  lowLim<-2^(statMean - 1.96*statSE)
+  
+  png(file=paste(file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:2, y=2^statMean, pch=19, col=c(rgb(0,0,0),rgb(1,0,0)), cex=3, xlim=c(0.7,2.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:2, labels=c("Control","Case"))
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(1,0,0,alpha=0.5), border=rgb(1,0,0,alpha=0.5))
+  
+  points(x=1:2, y=2^statMean, pch=19, col=c(rgb(0,0,0),rgb(1,0,0)), cex=3)
+  dev.off()
+}
+
+png(file=file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_legend.png"), units="in", res=300, pointsize=8, height=0.45, width=0.8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=19, lty=1, lwd=2, col=c(rgb(0,0,0),rgb(1,0,0)), legend=c("Control","Case"))
+dev.off()
+
+```
+
+### Visits A & B: case vs. control V virus + vs. -
+
+```{r visitABcaVcoVposVneg}
+
+table(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2)
+
+for (i in 1:nrow(nasalGSABrbe))
+{
+  curMod<-rownames(nasalGSABrbe)[i]
+  curFN<-paste(curMod, ".png", sep="")
+
+  statMean<-tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), mean)  
+  statSD<-tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), sd)
+  statSE<-statSD/sqrt(tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  png(file=paste(file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(221/255,160/255,221/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.Non-viral","Case.Non-viral","Control.Viral","Case.Viral"), cex.axis=0.6)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(221/255,160/255,221/255, alpha=0.5), border=rgb(221/255,160/255,221/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(160/255,32/255,240/255,alpha=0.5), border=rgb(160/255,32/255,240/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(221/255,160/255,221/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3)
+  dev.off()
+}
+
+png(file=file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_legend.png"), units="in", res=300, pointsize=8, height=0.7, width=1.3)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=19, lty=1, lwd=2, col=c(rgb(84/255,84/255,84/255),rgb(221/255,160/255,221/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), legend=c("Control.Non-viral","Case.Non-viral","Control.Viral","Case.Viral"))
+dev.off()
+
+```
+
+
+
+### Visits A & B: case vs. control V virus + vs. - New Colors and plotting characters (5/11/18)
+
+```{r visitABcaVcoVposVnegNewCol}
+
+table(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2)
+
+for (i in 1:nrow(nasalGSABrbe))
+{
+  curMod<-rownames(nasalGSABrbe)[i]
+  curFN<-paste(curMod, ".png", sep="")
+
+  statMean<-tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), mean)  
+  statSD<-tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), sd)
+  statSE<-statSD/sqrt(tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  png(file=paste(file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_newColor_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=c(15,15,19,19), col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.Non-viral","Case.Non-viral","Control.Viral","Case.Viral"), cex.axis=0.6)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(197/255,90/255,17/255, alpha=0.5), border=rgb(197/255,90/255,17/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(160/255,32/255,240/255,alpha=0.5), border=rgb(160/255,32/255,240/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=c(15,15,19,19), col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3)
+  dev.off()
+}
+
+png(file=file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_legend.png"), units="in", res=300, pointsize=8, height=0.7, width=1.3)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=c(15,15,19,19), lty=1, lwd=2, col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), legend=c("Control.Non-viral","Case.Non-viral","Control.Viral","Case.Viral"))
+dev.off()
+
+png(file=file.path(resultsDir, "nasal_meanSEplots_moduleLevel/visitAB_caseVcontrol_virusPosVNeg_legend_v2.png"), units="in", res=300, pointsize=8, height=0.7, width=1.3)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=c(15,15,19,19), lty=1, lwd=2, col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), legend=c("V- Ex-","V- Ex+","V+ Ex-","V+ Ex+"))
+dev.off()
+
+
+# 1/14/19 remake as svg for the paper
+for (i in 1:nrow(nasalGSABrbe))
+{
+  curMod<-rownames(nasalGSABrbe)[i]
+  curFN<-paste(curMod, ".svg", sep="")
+
+  statMean<-tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), mean)  
+  statSD<-tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), sd)
+  statSE<-statSD/sqrt(tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  svg(file=paste(file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_newColor_"), curFN, sep=""), width=3, height=4, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=c(15,15,19,19), col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.Non-viral","Case.Non-viral","Control.Viral","Case.Viral"), cex.axis=0.6)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(197/255,90/255,17/255, alpha=0.5), border=rgb(197/255,90/255,17/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(160/255,32/255,240/255,alpha=0.5), border=rgb(160/255,32/255,240/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=c(15,15,19,19), col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3)
+  dev.off()
+}
+
+svg(file=file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_legend_v2.svg"), pointsize=8, height=0.72, width=1)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=c(15,15,19,19), lty=1, lwd=2, col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), legend=c("V- Ex-","V- Ex+","V+ Ex-","V+ Ex+"))
+dev.off()
+
+```
+
+
+### Visits A & B: case vs. control V virus + vs. - Lower Limit is not Set to Zero
+
+```{r visitABcaVcoVposVnegNot0}
+
+table(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2)
+
+for (i in 1:nrow(nasalGSABrbe))
+{
+  curMod<-rownames(nasalGSABrbe)[i]
+  curFN<-paste(curMod, ".png", sep="")
+
+  statMean<-tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), mean)  
+  statSD<-tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), sd)
+  statSE<-statSD/sqrt(tapply(nasalGSABrbe[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Viral.Type.at.Visit2), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  png(file=paste(file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_LLnotSetTo0_", curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(221/255,160/255,221/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3, xlim=c(0.7,4.3), ylim=c(min(lowLim), max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.Non-viral","Case.Non-viral","Control.Viral","Case.Viral"), cex.axis=0.6)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(221/255,160/255,221/255, alpha=0.5), border=rgb(221/255,160/255,221/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(160/255,32/255,240/255,alpha=0.5), border=rgb(160/255,32/255,240/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(221/255,160/255,221/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3)
+  dev.off()
+}
+
+```
+
+### Visits A & B: case vs. control V bmi 95th percentile yes vs. no
+
+```{r visitABbmi}
+
+# set up BMI percentile cutoff of 95th percentile
+hist(nasalDesignABRBE$BMI.Percentile.at.Visit, breaks=20)
+nasalDesignABRBE$BMIcat95<-"low"
+nasalDesignABRBE$BMIcat95[which(nasalDesignABRBE$BMI.Percentile.at.Visit > 95)]<-"high"
+nasalDesignABRBE$BMIcat95[which(is.na(nasalDesignABRBE$BMI.Percentile.at.Visit))]<-NA
+table(nasalDesignABRBE$BMIcat95)
+nasalDesignABRBE$BMIcat95<-factor(nasalDesignABRBE$BMIcat95, levels=c("low","high"))
+
+table(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$BMIcat95)
+
+# visit A: case vs. control as well as BMI95th percentile
+for (i in 1:nrow(nasalGSABrbeV))
+{
+  curMod<-rownames(nasalGSABrbeV)[i]
+  curFN<-paste(curMod, ".png", sep="")
+  
+  statMean<-tapply(nasalGSABrbeV[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$BMIcat95), mean)  
+  statSD<-tapply(nasalGSABrbeV[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$BMIcat95), sd)
+  statSE<-statSD/sqrt(tapply(nasalGSABrbeV[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$BMIcat95), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  # chose darkolivegreen3 for case BMI low over darkolivegreen1 (too light)
+  png(file=paste(file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_BMI95th_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(162/255,205/255,90/255),rgb(0,0,0),rgb(85/255,107/255,47/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.lowBMI","Case.lowBMI","Control.highBMI","Case.highBMI"), cex.axis=0.8)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(162/255,205/255,90/255, alpha=0.5), border=rgb(162/255,205/255,90/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(85/255,107/255,47/255,alpha=0.5), border=rgb(85/255,107/255,47/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(162/255,205/255,90/255),rgb(0,0,0),rgb(85/255,107/255,47/255)), cex=3)
+  dev.off()
+}
+
+png(file=file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_BMI95th_legend.png"), units="in", res=300, pointsize=8, height=0.75, width=1.3)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=19, lty=1, lwd=2, col=c(rgb(84/255,84/255,84/255),rgb(162/255,205/255,90/255),rgb(0,0,0),rgb(85/255,107/255,47/255)), legend=c("Control.lowBMI","Case.lowBMI","Control.highBMI","Case.highBMI"))
+dev.off()
+
+```
+
+### Visits A & B: case vs. control V Nic Alert 0-1 vs. 2-5
+
+```{r visitABnicAlert}
+
+# set up Nic Alert binary: 0-1 vs. 2-5
+nasalDesignABRBE$NicAlertBinary<-as.character(nasalDesignABRBE$NicAlert.at.Visit)
+nasalDesignABRBE$NicAlertBinary[which(nasalDesignABRBE$NicAlert.at.Visit %in% c("Level 0 (0-10 ng/mL)","Level 1 (10-30 ng/mL)"))]<-"0-1"
+nasalDesignABRBE$NicAlertBinary[which(nasalDesignABRBE$NicAlert.at.Visit %in% c("Level 2 (30-100 ng/mL)","Level 3 (100-200 ng/mL)","Level 4 (200-500 ng/mL)","Level 5 (500-1000 ng/mL)"))]<-"2-5"
+table(nasalDesignABRBE$NicAlertBinary)
+nasalDesignABRBE$NicAlertBinary<-factor(nasalDesignABRBE$NicAlertBinary, levels=c("0-1","2-5"))
+
+table(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$NicAlertBinary)
+
+# visit A: case vs. control as well as Nic Alert
+for (i in 1:nrow(nasalGSABrbeV))
+{
+  curMod<-rownames(nasalGSABrbeV)[i]
+  curFN<-paste(curMod, ".png", sep="")
+  
+  statMean<-tapply(nasalGSABrbeV[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$NicAlertBinary), mean)  
+  statSD<-tapply(nasalGSABrbeV[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$NicAlertBinary), sd)
+  statSE<-statSD/sqrt(tapply(nasalGSABrbeV[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$NicAlertBinary), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  png(file=paste(file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_NicAlert_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(210/255,105/255,30/255),rgb(0,0,0),rgb(139/255,69/255,19/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.Nic0-1","Case.Nic0-1","Control.Nic2-5","Case.Nic2-5"), cex.axis=0.8)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(210/255,105/255,30/255, alpha=0.5), border=rgb(210/255,105/255,30/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(139/255,69/255,19/255,alpha=0.5), border=rgb(139/255,69/255,19/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(210/255,105/255,30/255),rgb(0,0,0),rgb(139/255,69/255,19/255)), cex=3)
+  dev.off()
+}
+
+png(file=file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_NicAlert_legend.png"), units="in", res=300, pointsize=8, height=0.75, width=1.2)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=19, lty=1, lwd=2, col=c(rgb(84/255,84/255,84/255),rgb(210/255,105/255,30/255),rgb(0,0,0),rgb(139/255,69/255,19/255)), legend=c("Control.Nic0-1","Case.Nic0-1","Control.Nic2-5","Case.Nic2-5"))
+dev.off()
+
+```
+
+### Visits A & B: case vs. control V male vs. female
+
+```{r visitABcaVcoVposVneg}
+
+table(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Sex)
+
+for (i in 1:nrow(nasalGSABrbeV))
+{
+  curMod<-rownames(nasalGSABrbeV)[i]
+  curFN<-paste(curMod, ".png", sep="")
+  
+  statMean<-tapply(nasalGSABrbeV[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Sex), mean)  
+  statSD<-tapply(nasalGSABrbeV[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Sex), sd)
+  statSE<-statSD/sqrt(tapply(nasalGSABrbeV[i,], list(nasalDesignABRBE$Case.or.Control.Status.Original, nasalDesignABRBE$Sex), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  png(file=paste(file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_Gender_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(255/255,64/255,64/255),rgb(0,0,0),rgb(139/255,35/255,35/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.F","Case.F","Control.M","Case.M"), cex.axis=0.8)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(255/255,64/255,64/255, alpha=0.5), border=rgb(255/255,64/255,64/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(139/255,35/255,35/255,alpha=0.5), border=rgb(139/255,35/255,35/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(255/255,64/255,64/255),rgb(0,0,0),rgb(139/255,35/255,35/255)), cex=3)
+  dev.off()
+}
+
+png(file=file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseVcontrol_Gender_legend.png"), units="in", res=300, pointsize=8, height=0.75, width=0.95)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=19, lty=1, lwd=2, col=c(rgb(84/255,84/255,84/255),rgb(255/255,64/255,64/255),rgb(0,0,0),rgb(139/255,35/255,35/255)), legend=c("Control.F","Case.F","Control.M","Case.M"))
+dev.off()
+
+```
+
+### Visits A & B case fast vs. case slow vs. control
+
+```{r rapidCaseAB}
+
+nasalDesignABRBE$CaseControlTrip<-as.character(nasalDesignABRBE$Case.or.Control.Status.Original)
+nasalDesignABRBE$CaseControlTrip[which(nasalDesignABRBE$Case.or.Control.Status.Original=="Case" & nasalDesignABRBE$Exacerbate.Within.2.Days.of.Cold=="Yes")]<-"RapidCase"
+nasalDesignABRBE$CaseControlTrip[which(nasalDesignABRBE$Case.or.Control.Status.Original=="Case" & nasalDesignABRBE$Exacerbate.Within.2.Days.of.Cold=="No")]<-"SlowCase"
+table(nasalDesignABRBE$CaseControlTrip)
+nasalDesignABRBE$CaseControlTrip<-factor(nasalDesignABRBE$CaseControlTrip, levels=c("Control","SlowCase","RapidCase"))
+
+table(nasalDesignABRBE$CaseControlTrip)
+
+for (i in 1:nrow(nasalGSABrbeV))
+{
+  curMod<-rownames(nasalGSABrbeV)[i]
+  curFN<-paste(curMod, ".png", sep="")
+  
+  statMean<-tapply(nasalGSABrbeV[i,], nasalDesignABRBE$CaseControlTrip, mean)  
+  statSD<-tapply(nasalGSABrbeV[i,], nasalDesignABRBE$CaseControlTrip, sd)
+  statSE<-statSD/sqrt(tapply(nasalGSABrbeV[i,], nasalDesignABRBE$CaseControlTrip, length))
+  upLim<-2^(statMean + 1.96*statSE)
+  lowLim<-2^(statMean - 1.96*statSE)
+  
+  png(file=paste(file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseSplitBySpeedVcontrol_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:3, y=as.vector(2^statMean), pch=19, col=c(rgb(0,0,0), rgb(0,1,0),rgb(0/255,139/255,0/255)), cex=3, xlim=c(0.7,3.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:3, labels=c("Control","SlowCase","RapidCase"), cex.axis=0.8)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(0,1,0, alpha=0.5), border=rgb(0,1,0, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0/255,139/255,0/255,alpha=0.5), border=rgb(0/255,139/255,0/255,alpha=0.5))
+  
+  points(x=1:3, y=as.vector(2^statMean), pch=19, col=c(rgb(0,0,0), rgb(0,1,0),rgb(0/255,139/255,0/255)), cex=3)
+  dev.off()
+}
+
+png(file=file.path(resultsDir, "nasal_meanSEplots_moduleLevel_visitAB_caseSplitBySpeedVcontrol_legend.png"), units="in", res=300, pointsize=8, height=0.65, width=1)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=19, lty=1, lwd=2, col=c(rgb(0,0,0), rgb(0,1,0),rgb(0/255,139/255,0/255)), legend=c("Control","SlowCase","RapidCase"))
+dev.off()
+
+```

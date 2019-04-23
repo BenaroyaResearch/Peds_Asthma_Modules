@@ -1,0 +1,754 @@
+---
+title: "Module Mean SE plots"
+author: "Elizabeth Whalen"
+date: "1/11/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in Data
+
+```{r readData}
+
+dataDir <- "../data"
+resultsDir <- "../results"
+
+# read in gene set expression and design file
+gsMeans<-read.csv(file=file.path(dataDir, "nasalGeneSets_374samples.csv"), row.names=1)
+nDesign<-read.csv(file=file.path(dataDir, "totalNasalDesign_update.csv"))
+
+# need to make them match
+matchIndex<-match(colnames(gsMeans), nDesign$library.sampleId)
+nDesignSub<-nDesign[matchIndex,]
+all(colnames(gsMeans)==nDesignSub$library.sampleId)
+
+# set case/control status for visit 0
+nDesignSub$Case.or.Control.Status.Original<-as.character(nDesignSub$Case.or.Control.Status.Original)
+sum(nDesignSub$Case.or.Control.Status.Original=="") # 94
+visit0StatusIndex<-which(nDesignSub$Case.or.Control.Status.Original=="")
+# need to count any visit 0 that is in both case and control as both
+for (i in 1:length(visit0StatusIndex))
+{
+  curIndex<-visit0StatusIndex[i]
+  curID<-as.character(nDesignSub$Subject.Identifier.for.the.Study[curIndex])
+  matchIndex<-which(curID==as.character(nDesignSub$Subject.Identifier.for.the.Study) & nDesignSub$Visit!="Visit 0")
+  if (length(unique(as.character(nDesignSub$Case.or.Control.Status.Original[matchIndex])))==1)
+  {
+    nDesignSub$Case.or.Control.Status.Original[curIndex]<-unique(as.character(nDesignSub$Case.or.Control.Status.Original[matchIndex]))
+  }
+  else
+  {
+#    # because V0 is a case if it's ever a case for visit A
+#    nDesignSub$Case.or.Control.Status.Original[curIndex]<-"Case"
+    # need to double count this visit 0 as both case and control
+    nDesignSub$Case.or.Control.Status.Original[curIndex]<-"Control"
+    # now add second value for case
+    nDesignSub<-rbind(nDesignSub, nDesignSub[curIndex,])
+    nDesignSub$Case.or.Control.Status.Original[nrow(nDesignSub)]<-"Case"
+    gsMeans<-cbind(gsMeans, gsMeans[, curIndex])
+  }
+}
+sum(nDesignSub$Case.or.Control.Status.Original=="") # 0
+# make sure names match
+colnames(gsMeans)<-as.character(nDesignSub$library.sampleId)
+all(colnames(gsMeans)==nDesignSub$library.sampleId)
+
+```
+
+## Remove Batch Effects
+
+```{r remBatch}
+
+# remove batch effects
+remIndex<-unique(c(which(is.na(nDesignSub$Nasal.Eosinophil.Count)), which(is.na(nDesignSub$Viral.Type.at.Visit2))))
+rbeMM<-model.matrix(~libCounts + Nasal.Lymphocyte.Count + Nasal.Epithelial.Count + Nasal.Macrophage.Count + Nasal.Eosinophil.Count + Nasal.Squamous.Count + Viral.Type.at.Visit2, data = nDesignSub[-remIndex,])
+keepmm<-model.matrix(~Case.or.Control.Status.Original + Visit, data=nDesignSub[-remIndex,])
+library(limma)
+gsMeansRBE<-removeBatchEffect(gsMeans[,-remIndex], covariates=rbeMM[,-1], design=keepmm)
+  
+nasalDesignRBE<-nDesignSub[-remIndex,]
+
+all(nasalDesignRBE$library.sampleId==colnames(gsMeansRBE))
+all(nasalDesignRBE$library.sampleId==unlist(lapply(strsplit(colnames(gsMeansRBE),"\\."), function(x) {x[1]})))
+
+# remove 0 mods
+remMods<-c("neut0","lymp0","eos0","mac0","epi0","squa0","unma0")
+gsMeansNo0<-gsMeansRBE[-which(rownames(gsMeansRBE) %in% remMods),]
+
+```
+
+## Get Rid of Steroids at Visit B
+
+```{r remSteroids}
+
+remIndex<-which(nasalDesignRBE$CSteroid.Start.Relative.to.Visit=="Before")
+nasalDesignRBE2<-nasalDesignRBE[-remIndex,]
+gsMeansNo0v2<-gsMeansNo0[,-remIndex]
+all(colnames(gsMeansNo0v2)==nasalDesignRBE2$library.sampleId)
+table(nasalDesignRBE2$CSteroid.Start.Relative.to.Visit) # should be 0 for Before
+
+table(nasalDesignRBE2$Visit, nasalDesignRBE2$Case.or.Control.Status.Original)
+
+```
+
+## Make Plots
+
+```{r makePlots}
+
+# now add points to the mean/SE plot
+# this puts all control first and then all cases
+for (i in 1:nrow(gsMeansNo0v2))
+{
+  curGS<-rownames(gsMeansNo0v2)[i]
+  curIndex<-which(curGS==rownames(gsMeansNo0v2))
+#  fileNameSVG<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints/",curGS,".svg",sep="")
+#  svg(filename=fileNameSVG, width=4.5, height=4.5, pointsize=8)
+  fileNamePDF<-paste(file.path(resultsDir), "geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_", curGS, ".pdf", sep="")
+  pdf(filename=fileNamePDF, width=4.5, height=4.5, pointsize=8)
+  origMar<-par("mar")
+  par(mar=origMar*c(1.1,1,1,1))
+  nasalDesignRBE2$Case.or.Control.Status.Original<-factor(as.character(nasalDesignRBE2$Case.or.Control.Status.Original), levels=c("Control","Case"))
+  # need to calculate values
+  curMeans<-tapply(gsMeansNo0v2[curIndex,], list(nasalDesignRBE2$Visit, nasalDesignRBE2$Case.or.Control.Status.Original), mean)
+  curSD<-tapply(gsMeansNo0v2[curIndex,], list(nasalDesignRBE2$Visit, nasalDesignRBE2$Case.or.Control.Status.Original), sd)
+  curLen<-tapply(gsMeansNo0v2[curIndex,], list(nasalDesignRBE2$Visit, nasalDesignRBE2$Case.or.Control.Status.Original), length)
+  curSE<-curSD/sqrt(curLen)
+  curQuart<-tapply(gsMeansNo0v2[curIndex,], list(nasalDesignRBE2$Visit, nasalDesignRBE2$Case.or.Control.Status.Original), quantile, 0.25)
+  curThreeQuart<-tapply(gsMeansNo0v2[curIndex,], list(nasalDesignRBE2$Visit, nasalDesignRBE2$Case.or.Control.Status.Original), quantile, 0.75)
+#  curCI<-qt(0.975, df=curLen-1)*curSE
+#  curCI<-2*curSE
+  curCI<-2*curSD
+  allCols<-c("black","black","black","red","red","red")
+  allVals<-c(2^(as.vector(curMeans)-as.vector(curCI)), 2^(as.vector(curMeans)+as.vector(curCI)), 2^gsMeansNo0[curIndex,])
+  minVal<-min(allVals)*0.99
+  maxVal<-max(allVals)*1.01
+  library(scales)
+  beeswarm(2^gsMeansNo0v2[curIndex,] ~ nasalDesignRBE2$Visit + nasalDesignRBE2$Case.or.Control.Status.Original, pch=19, cex=0.8, col=alpha(c("gray","gray","gray","pink","pink","pink"), 1), axes=FALSE, xlab="", ylab="Normalized Expression", main=curGS)
+  points(x=1:6, y=2^as.vector(curMeans), pch=19, col=allCols, cex=2, ylab="Normalized Expression")
+  box()
+  axis(2, las=2)
+  axis(1, las=2, at=1:6, labels=c("Control.Visit 0","Control.Visit a", "Control.Visit b","Case.Visit 0","Case.Visit a", "Case.Visit b"))
+  for (j in 1:6)
+  {
+#    segments(x0=j,x1=j, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]),y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+    segments(x0=j,x1=j, y0=2^(as.vector(curQuart)[j]),y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curQuart)[j]), y1=2^(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curThreeQuart)[j]), y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+  }
+  # add a line to show progression within each group/status
+  lines(x=1:3, y=2^curMeans[,1], lwd=2)
+  lines(x=4:6, y=2^curMeans[,2], col="red", lwd=2)
+  dev.off()
+}
+
+# this puts visit 0 first, then visit a, then visit b
+library(beeswarm)
+for (i in 1:nrow(gsMeansNo0v2))
+{
+  curGS<-rownames(gsMeansNo0v2)[i]
+  curIndex<-which(curGS==rownames(gsMeansNo0v2))
+#  fileNameSVG<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_log2/",curGS,".svg",sep="")
+#  svg(filename=fileNameSVG, width=4.5, height=4.5, pointsize=8)
+#  fileNamePDF<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_log2/",curGS,".pdf",sep="")
+#  pdf(file=fileNamePDF, width=4.5, height=4.5, pointsize=8)
+  fileNamePNG<-paste(file.path(resultsDir), "geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_log2_", curGS, ".png", sep="")
+  png(file=fileNamePNG, units="in", width=4.5, height=4.5, res=300, pointsize=8)
+  origMar<-par("mar")
+  par(mar=origMar*c(1.2,1,1,1))
+  nasalDesignRBE2$Case.or.Control.Status.Original<-factor(as.character(nasalDesignRBE2$Case.or.Control.Status.Original), levels=c("Control","Case"))
+  # need to calculate values
+  curMeans<-tapply(gsMeansNo0v2[curIndex,], list(nasalDesignRBE2$Case.or.Control.Status.Original, nasalDesignRBE2$Visit), mean)
+  curSD<-tapply(gsMeansNo0v2[curIndex,], list(nasalDesignRBE2$Case.or.Control.Status.Original, nasalDesignRBE2$Visit), sd)
+  curLen<-tapply(gsMeansNo0v2[curIndex,], list(nasalDesignRBE2$Case.or.Control.Status.Original, nasalDesignRBE2$Visit), length)
+  curSE<-curSD/sqrt(curLen)
+  curQuart<-tapply(gsMeansNo0v2[curIndex,], list(nasalDesignRBE2$Case.or.Control.Status.Original, nasalDesignRBE2$Visit), quantile, 0.25)
+  curThreeQuart<-tapply(gsMeansNo0v2[curIndex,], list(nasalDesignRBE2$Case.or.Control.Status.Original, nasalDesignRBE2$Visit), quantile, 0.75)
+#  curCI<-qt(0.975, df=curLen-1)*curSE
+  curCI<-2*curSE
+#  curCI<-2*curSD
+  allCols<-c("black","red","black","red","black","red")
+#  allVals<-c(2^(as.vector(curMeans)-as.vector(curCI)), 2^(as.vector(curMeans)+as.vector(curCI)), 2^gsMeansNo0v2[curIndex,])
+  allVals<-c((as.vector(curMeans)-as.vector(curCI)), (as.vector(curMeans)+as.vector(curCI)), gsMeansNo0v2[curIndex,])
+  minVal<-min(allVals)*0.99
+  maxVal<-max(allVals)*1.01
+  xVals<-c(1.2,1.8,3.2,3.8,5.2,5.8)
+  library(scales)
+#  beeswarm(2^gsMeansNo0v2[curIndex,] ~ nasalDesignRBE2$Case.or.Control.Status.Original + nasalDesignRBE2$Visit, pch=19, cex=0.6, col=alpha(c("gray","pink","gray","pink","gray","pink"), 1), axes=FALSE, xlab="", ylab="Normalized Expression", main=curGS)
+#  points(x=1:6, y=2^as.vector(curMeans), pch=19, col=allCols, cex=2, ylab="Normalized Expression")
+  beeswarm(gsMeansNo0v2[curIndex,] ~ nasalDesignRBE2$Case.or.Control.Status.Original + nasalDesignRBE2$Visit, pch=19, cex=0.5, col=alpha(c("gray","pink","gray","pink","gray","pink"), 1), axes=FALSE, xlab="", ylab="Normalized Expression log2", main=curGS, at=xVals, xlim=c(0.7,6.3))
+  points(x=xVals, y=as.vector(curMeans), pch=19, col=allCols, cex=2)
+  box()
+  axis(2, las=2)
+  axis(1, las=2, at=xVals, labels=c("Control.Visit 0","Case.Visit 0","Control.Visit a","Case.Visit a","Control.Visit b", "Case.Visit b"))
+  for (j in 1:6)
+  {
+    # use SE or SD
+#    segments(x0=j,x1=j, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]),y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+    # use IQR
+#    segments(x0=j,x1=j, y0=2^(as.vector(curQuart)[j]),y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curQuart)[j]), y1=2^(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curThreeQuart)[j]), y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    
+    segments(x0=xVals[j],x1=xVals[j], y0=(as.vector(curQuart)[j]),y1=(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=xVals[j]-0.05, x1=xVals[j]+0.05, y0=(as.vector(curQuart)[j]), y1=(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=xVals[j]-0.05, x1=xVals[j]+0.05, y0=(as.vector(curThreeQuart)[j]), y1=(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+  }
+  # add a line to show progression within each group/status
+#  lines(x=c(1,3,5), y=2^curMeans[1,], lwd=2)
+#  lines(x=c(2,4,6), y=2^curMeans[2,], col="red", lwd=2)
+  lines(x=xVals[c(1,3,5)], y=curMeans[1,], lwd=2)
+  lines(x=xVals[c(2,4,6)], y=curMeans[2,], col="red", lwd=2)
+  dev.off()
+}
+
+```
+
+## Add Back in Steroids
+
+```{r addCS}
+
+# this puts visit 0 first, then visit a, then visit b
+for (i in 1:nrow(gsMeansNo0))
+{
+  curGS<-rownames(gsMeansNo0)[i]
+  curIndex<-which(curGS==rownames(gsMeansNo0))
+#  fileNameSVG<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS/",curGS,".svg",sep="")
+#  svg(filename=fileNameSVG, width=4.5, height=4.5, pointsize=8)
+  
+#  fileNamePDF<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS/",curGS,".pdf",sep="")
+#  pdf(file=fileNamePDF, width=4.5, height=4.5, pointsize=8)
+  fileNamePNG<-paste(file.path(resultsDir), "geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS_", curGS, ".png", sep="")
+  png(file=fileNamePNG, units="in", width=4.5, height=4.5, res=300, pointsize=8)
+  
+  origMar<-par("mar")
+  par(mar=origMar*c(1.2,1,1,1))
+  # make a new factor to include case.visit b.on CS
+  nasalDesignRBE$newOutcome<-rep("Control.Visit 0")
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit 0")]<-"Case.Visit 0"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Control" & nasalDesignRBE$Visit=="Visit a")]<-"Control.Visit a"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit a")]<-"Case.Visit a"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Control" & nasalDesignRBE$Visit=="Visit b")]<-"Control.Visit b"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit b" & nasalDesignRBE$CSteroid.Start.Relative.to.Visit=="After")]<-"Case.Visit b.pre-CS"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit b" & nasalDesignRBE$CSteroid.Start.Relative.to.Visit=="Before")]<-"Case.Visit b.post-CS"
+  nasalDesignRBE$newOutcome<-factor(as.character(nasalDesignRBE$newOutcome), levels=c("Control.Visit 0","Case.Visit 0","Control.Visit a","Case.Visit a","Control.Visit b","Case.Visit b.pre-CS","Case.Visit b.post-CS"))
+
+  # need to calculate values
+  curMeans<-tapply(gsMeansNo0[curIndex,], list(nasalDesignRBE$newOutcome), mean)
+  curSD<-tapply(gsMeansNo0[curIndex,], list(nasalDesignRBE$newOutcome), sd)
+  curLen<-tapply(gsMeansNo0[curIndex,], list(nasalDesignRBE$newOutcome), length)
+  curSE<-curSD/sqrt(curLen)
+  curQuart<-tapply(gsMeansNo0[curIndex,], list(nasalDesignRBE$newOutcome), quantile, 0.25)
+  curThreeQuart<-tapply(gsMeansNo0[curIndex,], list(nasalDesignRBE$newOutcome), quantile, 0.75)
+#  curCI<-qt(0.975, df=curLen-1)*curSE
+  curCI<-2*curSE
+#  curCI<-2*curSD
+  allCols<-c("black","red","black","red","black","red","red")
+  allVals<-c(2^(as.vector(curMeans)-as.vector(curCI)), 2^(as.vector(curMeans)+as.vector(curCI)), 2^gsMeansNo0[curIndex,])
+  minVal<-min(allVals)*0.99
+  maxVal<-max(allVals)*1.01
+  library(scales)
+  beeswarm(2^gsMeansNo0[curIndex,] ~ nasalDesignRBE$newOutcome, pch=19, cex=0.6, col=alpha(c("gray","pink","gray","pink","gray","pink","pink"), 1), axes=FALSE, xlab="", ylab="Normalized Expression", main=curGS)
+  points(x=1:7, y=2^as.vector(curMeans), pch=c(rep(19,6),2), col=allCols, cex=c(rep(2,6),1.5), ylab="Normalized Expression")
+  box()
+  axis(2, las=2)
+  axis(1, las=2, at=1:7, labels=c("Control.Visit 0","Case.Visit 0","Control.Visit a","Case.Visit a","Control.Visit b", "Case.Visit b.pre-CS","Case.Visit b.post-CS"))
+  for (j in 1:7)
+  {
+    # use SE or SD
+#    segments(x0=j,x1=j, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]),y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+    # use IQR
+    segments(x0=j,x1=j, y0=2^(as.vector(curQuart)[j]),y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curQuart)[j]), y1=2^(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curThreeQuart)[j]), y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+  }
+  # add a line to show progression within each group/status
+  lines(x=c(1,3,5), y=2^curMeans[c(1,3,5)], lwd=2)
+  lines(x=c(2,4,6), y=2^curMeans[c(2,4,6)], col="red", lwd=2)
+  lines(x=c(4,7), y=2^curMeans[c(4,7)], col="red", lty=2, lwd=2)
+  dev.off()
+}
+
+# put on log2 scale
+for (i in 1:nrow(gsMeansNo0))
+{
+  curGS<-rownames(gsMeansNo0)[i]
+  curIndex<-which(curGS==rownames(gsMeansNo0))
+  fileNameSVG<-paste(file.path(resultsDir), "geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS_log2_", curGS, ".svg", sep="")
+  svg(filename=fileNameSVG, width=4.5, height=4.5, pointsize=8)
+  
+#  fileNamePDF<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS_log2/",curGS,".pdf",sep="")
+#  pdf(file=fileNamePDF, width=4.5, height=4.5, pointsize=8)
+#  fileNamePNG<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS_log2/",curGS,".png", sep="")
+#  png(file=fileNamePNG, units="in", width=4.5, height=4.5, res=300, pointsize=8)
+  
+  origMar<-par("mar")
+  par(mar=origMar*c(1.3,1,1,1))
+  # make a new factor to include case.visit b.on CS
+  nasalDesignRBE$newOutcome<-rep("Control.Visit 0")
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit 0")]<-"Case.Visit 0"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Control" & nasalDesignRBE$Visit=="Visit a")]<-"Control.Visit a"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit a")]<-"Case.Visit a"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Control" & nasalDesignRBE$Visit=="Visit b")]<-"Control.Visit b"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit b" & nasalDesignRBE$CSteroid.Start.Relative.to.Visit=="After")]<-"Case.Visit b.pre-CS"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit b" & nasalDesignRBE$CSteroid.Start.Relative.to.Visit=="Before")]<-"Case.Visit b.post-CS"
+  nasalDesignRBE$newOutcome<-factor(as.character(nasalDesignRBE$newOutcome), levels=c("Control.Visit 0","Case.Visit 0","Control.Visit a","Case.Visit a","Control.Visit b","Case.Visit b.pre-CS","Case.Visit b.post-CS"))
+
+  # need to calculate values
+  curMeans<-tapply(gsMeansNo0[curIndex,], list(nasalDesignRBE$newOutcome), mean)
+  curSD<-tapply(gsMeansNo0[curIndex,], list(nasalDesignRBE$newOutcome), sd)
+  curLen<-tapply(gsMeansNo0[curIndex,], list(nasalDesignRBE$newOutcome), length)
+  curSE<-curSD/sqrt(curLen)
+  curQuart<-tapply(gsMeansNo0[curIndex,], list(nasalDesignRBE$newOutcome), quantile, 0.25)
+  curThreeQuart<-tapply(gsMeansNo0[curIndex,], list(nasalDesignRBE$newOutcome), quantile, 0.75)
+#  curCI<-qt(0.975, df=curLen-1)*curSE
+  curCI<-2*curSE
+#  curCI<-2*curSD
+  allCols<-c("black","red","black","red","black","red","red")
+#  allVals<-c(2^(as.vector(curMeans)-as.vector(curCI)), 2^(as.vector(curMeans)+as.vector(curCI)), 2^gsMeansNo0[curIndex,])
+  allVals<-c((as.vector(curMeans)-as.vector(curCI)), (as.vector(curMeans)+as.vector(curCI)), gsMeansNo0[curIndex,])
+  minVal<-min(allVals)*0.99
+  maxVal<-max(allVals)*1.01
+  library(scales)
+  xVals<-c(1.2,1.8,3.2,3.8,5.2,5.8,6.4)
+#  beeswarm(2^gsMeansNo0[curIndex,] ~ nasalDesignRBE$newOutcome, pch=19, cex=0.6, col=alpha(c("gray","pink","gray","pink","gray","pink","pink"), 1), axes=FALSE, xlab="", ylab="Normalized Expression", main=curGS)
+#  points(x=1:7, y=2^as.vector(curMeans), pch=c(rep(19,6),2), col=allCols, cex=c(rep(2,6),1.5), ylab="Normalized Expression")
+  beeswarm(gsMeansNo0[curIndex,] ~ nasalDesignRBE$newOutcome, pch=19, cex=0.6, col=alpha(c("gray","pink","gray","pink","gray","pink","pink"), 1), axes=FALSE, xlab="", ylab="Normalized Expression log2", main=curGS, xlim=c(0.7, 6.9), at=xVals)
+  points(x=xVals, y=as.vector(curMeans), pch=c(rep(19,6),2), col=allCols, cex=c(rep(2,6),1.5))
+  box()
+  axis(2, las=2)
+  axis(1, las=2, at=xVals, labels=c("Control.Visit 0","Case.Visit 0","Control.Visit a","Case.Visit a","Control.Visit b", "Case.Visit b.pre-CS","Case.Visit b.post-CS"))
+  for (j in 1:7)
+  {
+    # use SE or SD
+#    segments(x0=j,x1=j, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]),y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+    # use IQR
+#    segments(x0=j,x1=j, y0=2^(as.vector(curQuart)[j]),y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curQuart)[j]), y1=2^(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curThreeQuart)[j]), y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=xVals[j],x1=xVals[j], y0=(as.vector(curQuart)[j]),y1=(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=xVals[j]-0.05, x1=xVals[j]+0.05, y0=(as.vector(curQuart)[j]), y1=(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=xVals[j]-0.05, x1=xVals[j]+0.05, y0=(as.vector(curThreeQuart)[j]), y1=(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+  }
+  # add a line to show progression within each group/status
+#  lines(x=c(1,3,5), y=2^curMeans[c(1,3,5)], lwd=2)
+#  lines(x=c(2,4,6), y=2^curMeans[c(2,4,6)], col="red", lwd=2)
+#  lines(x=c(4,7), y=2^curMeans[c(4,7)], col="red", lty=2, lwd=2)
+  lines(x=xVals[c(1,3,5)], y=curMeans[c(1,3,5)], lwd=2)
+  lines(x=xVals[c(2,4,6)], y=curMeans[c(2,4,6)], col="red", lwd=2)
+  lines(x=xVals[c(4,7)], y=curMeans[c(4,7)], col="red", lty=2, lwd=2)
+  dev.off()
+}
+
+```
+
+## Subset to Viral Positive
+
+```{r viralPos}
+
+# remove batch effect again without removing viral type
+# remove batch effects
+remIndex<-unique(c(which(is.na(nDesignSub$Nasal.Eosinophil.Count)), which(is.na(nDesignSub$Viral.Type.at.Visit2))))
+rbeMM<-model.matrix(~libCounts + Nasal.Lymphocyte.Count + Nasal.Epithelial.Count + Nasal.Macrophage.Count + Nasal.Eosinophil.Count + Nasal.Squamous.Count, data = nDesignSub[-remIndex,])
+keepmm<-model.matrix(~Case.or.Control.Status.Original + Visit + Viral.Type.at.Visit2, data=nDesignSub[-remIndex,])
+library(limma)
+gsMeansRBE<-removeBatchEffect(gsMeans[,-remIndex], covariates=rbeMM[,-1], design=keepmm)
+  
+nasalDesignRBE<-nDesignSub[-remIndex,]
+
+all(nasalDesignRBE$library.sampleId==colnames(gsMeansRBE))
+all(nasalDesignRBE$library.sampleId==unlist(lapply(strsplit(colnames(gsMeansRBE),"\\."), function(x) {x[1]})))
+
+# remove 0 mods
+remMods<-c("neut0","lymp0","eos0","mac0","epi0","squa0","unma0")
+gsMeansNo0<-gsMeansRBE[-which(rownames(gsMeansRBE) %in% remMods),]
+
+nasalDesignRBE$newOutcome<-rep("Control.Visit 0")
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit 0")]<-"Case.Visit 0"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Control" & nasalDesignRBE$Visit=="Visit a")]<-"Control.Visit a"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit a")]<-"Case.Visit a"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Control" & nasalDesignRBE$Visit=="Visit b")]<-"Control.Visit b"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit b" & nasalDesignRBE$CSteroid.Start.Relative.to.Visit=="After")]<-"Case.Visit b.pre-CS"
+  nasalDesignRBE$newOutcome[which(nasalDesignRBE$Case.or.Control.Status.Original=="Case" & nasalDesignRBE$Visit=="Visit b" & nasalDesignRBE$CSteroid.Start.Relative.to.Visit=="Before")]<-"Case.Visit b.post-CS"
+  nasalDesignRBE$newOutcome<-factor(as.character(nasalDesignRBE$newOutcome), levels=c("Control.Visit 0","Case.Visit 0","Control.Visit a","Case.Visit a","Control.Visit b","Case.Visit b.pre-CS","Case.Visit b.post-CS"))
+
+
+nasalDesignRBEVP<-nasalDesignRBE[which(nasalDesignRBE$Viral.Type.at.Visit2=="Viral" | nasalDesignRBE$Visit=="Visit 0"),]
+gsMeansNo0VP<-gsMeansNo0[,which(nasalDesignRBE$Viral.Type.at.Visit2=="Viral" | nasalDesignRBE$Visit=="Visit 0")]
+all(colnames(gsMeansNo0VP)==nasalDesignRBEVP$library.sampleId)
+all(nasalDesignRBEVP$library.sampleId==unlist(lapply(strsplit(colnames(gsMeansNo0VP),"\\."), function(x) {x[1]})))
+
+table(nasalDesignRBEVP$newOutcome)
+
+for (i in 1:nrow(gsMeansNo0VP))
+{
+  curGS<-rownames(gsMeansNo0VP)[i]
+  curIndex<-which(curGS==rownames(gsMeansNo0VP))
+#  fileNameSVG<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS_ViralPos/",curGS,".svg",sep="")
+#  svg(filename=fileNameSVG, width=4.5, height=4.5, pointsize=8)
+  
+#  fileNamePDF<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS_ViralPos/",curGS,".pdf",sep="")
+#  pdf(file=fileNamePDF, width=4.5, height=4.5, pointsize=8)
+  fileNamePNG<-paste(file.path(resultsDir), "geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS_ViralPos_", curGS, ".png", sep="")
+  png(file=fileNamePNG, units="in", width=4.5, height=4.5, res=300, pointsize=8)
+  
+  origMar<-par("mar")
+  par(mar=origMar*c(1.2,1,1,1))
+  
+  # need to calculate values
+  curMeans<-tapply(gsMeansNo0VP[curIndex,], list(nasalDesignRBEVP$newOutcome), mean)
+  curSD<-tapply(gsMeansNo0VP[curIndex,], list(nasalDesignRBEVP$newOutcome), sd)
+  curLen<-tapply(gsMeansNo0VP[curIndex,], list(nasalDesignRBEVP$newOutcome), length)
+  curSE<-curSD/sqrt(curLen)
+  curQuart<-tapply(gsMeansNo0VP[curIndex,], list(nasalDesignRBEVP$newOutcome), quantile, 0.25)
+  curThreeQuart<-tapply(gsMeansNo0VP[curIndex,], list(nasalDesignRBEVP$newOutcome), quantile, 0.75)
+#  curCI<-qt(0.975, df=curLen-1)*curSE
+  curCI<-2*curSE
+#  curCI<-2*curSD
+  allCols<-c("black","purple3","black","purple3","black","purple3","purple3")
+  allVals<-c(2^(as.vector(curMeans)-as.vector(curCI)), 2^(as.vector(curMeans)+as.vector(curCI)), 2^gsMeansNo0[curIndex,])
+  minVal<-min(allVals)*0.99
+  maxVal<-max(allVals)*1.01
+  library(scales)
+  beeswarm(2^gsMeansNo0VP[curIndex,] ~ nasalDesignRBEVP$newOutcome, pch=19, cex=0.6, col=alpha(c("gray","mediumpurple1","gray","mediumpurple1","gray","mediumpurple1","mediumpurple1"), 1), axes=FALSE, xlab="", ylab="Normalized Expression", main=curGS)
+  points(x=1:7, y=2^as.vector(curMeans), pch=c(rep(19,6),2), col=allCols, cex=c(rep(2,6),1.5), ylab="Normalized Expression")
+  box()
+  axis(2, las=2)
+  axis(1, las=2, at=1:7, labels=c("Control.Visit 0","Case.Visit 0","Control.Visit a","Case.Visit a","Control.Visit b", "Case.Visit b.pre-CS","Case.Visit b.post-CS"))
+  for (j in 1:7)
+  {
+    # use SE or SD
+#    segments(x0=j,x1=j, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]),y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+    # use IQR
+    segments(x0=j,x1=j, y0=2^(as.vector(curQuart)[j]),y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curQuart)[j]), y1=2^(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curThreeQuart)[j]), y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+  }
+  # add a line to show progression within each group/status
+  lines(x=c(1,3,5), y=2^curMeans[c(1,3,5)], lwd=2)
+  lines(x=c(2,4,6), y=2^curMeans[c(2,4,6)], col="purple3", lwd=2)
+  lines(x=c(4,7), y=2^curMeans[c(4,7)], col="purple3", lty=2, lwd=2)
+  
+  dev.off()
+}
+
+# put on log2 scale
+for (i in 1:nrow(gsMeansNo0VP))
+{
+  curGS<-rownames(gsMeansNo0VP)[i]
+  curIndex<-which(curGS==rownames(gsMeansNo0VP))
+  fileNameSVG<-paste(file.path(resultsDir), "geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS_ViralPos_log2_", curGS, ".svg", sep="")
+  svg(filename=fileNameSVG, width=4.5, height=4.5, pointsize=8)
+  
+#  fileNamePDF<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS_ViralPos_log2/",curGS,".pdf",sep="")
+#  pdf(file=fileNamePDF, width=4.5, height=4.5, pointsize=8)
+#  fileNamePNG<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/meanSE/geneSets_allVisits_Nasal_CaseVControl_MeanSE_PlusPoints_IncludeCS_ViralPos_log2/",curGS,".png", sep="")
+#  png(file=fileNamePNG, units="in", width=4.5, height=4.5, res=300, pointsize=8)
+  
+  origMar<-par("mar")
+  par(mar=origMar*c(1.3,1,1,1))
+  
+  # need to calculate values
+  curMeans<-tapply(gsMeansNo0VP[curIndex,], list(nasalDesignRBEVP$newOutcome), mean)
+  curSD<-tapply(gsMeansNo0VP[curIndex,], list(nasalDesignRBEVP$newOutcome), sd)
+  curLen<-tapply(gsMeansNo0VP[curIndex,], list(nasalDesignRBEVP$newOutcome), length)
+  curSE<-curSD/sqrt(curLen)
+  curQuart<-tapply(gsMeansNo0VP[curIndex,], list(nasalDesignRBEVP$newOutcome), quantile, 0.25)
+  curThreeQuart<-tapply(gsMeansNo0VP[curIndex,], list(nasalDesignRBEVP$newOutcome), quantile, 0.75)
+#  curCI<-qt(0.975, df=curLen-1)*curSE
+  curCI<-2*curSE
+#  curCI<-2*curSD
+  allCols<-c("black","purple3","black","purple3","black","purple3","purple3")
+#  allVals<-c(2^(as.vector(curMeans)-as.vector(curCI)), 2^(as.vector(curMeans)+as.vector(curCI)), 2^gsMeansNo0[curIndex,])
+  allVals<-c((as.vector(curMeans)-as.vector(curCI)), (as.vector(curMeans)+as.vector(curCI)), gsMeansNo0[curIndex,])
+  minVal<-min(allVals)*0.99
+  maxVal<-max(allVals)*1.01
+  library(scales)
+  xVals<-c(1.2,1.8,3.2,3.8,5.2,5.8,6.4)
+#  beeswarm(2^gsMeansNo0VP[curIndex,] ~ nasalDesignRBEVP$newOutcome, pch=19, cex=0.6, col=alpha(c("gray","mediumpurple1","gray","mediumpurple1","gray","mediumpurple1","mediumpurple1"), 1), axes=FALSE, xlab="", ylab="Normalized Expression", main=curGS)
+#  points(x=1:7, y=2^as.vector(curMeans), pch=c(rep(19,6),2), col=allCols, cex=c(rep(2,6),1.5), ylab="Normalized Expression")
+  beeswarm(gsMeansNo0VP[curIndex,] ~ nasalDesignRBEVP$newOutcome, pch=19, cex=0.5, col=alpha(c("gray","mediumpurple1","gray","mediumpurple1","gray","mediumpurple1","mediumpurple1"), 1), axes=FALSE, xlab="", ylab="Normalized Expression log2", main=curGS, at=xVals, xlim=c(0.7,6.9))
+  points(x=xVals, y=as.vector(curMeans), pch=c(rep(19,6),2), col=allCols, cex=c(rep(2,6),1.5))
+  box()
+  axis(2, las=2)
+  axis(1, las=2, at=xVals, labels=c("Control.Visit 0","Case.Visit 0","Control.Visit a","Case.Visit a","Control.Visit b", "Case.Visit b.pre-CS","Case.Visit b.post-CS"))
+  for (j in 1:7)
+  {
+    # use SE or SD
+#    segments(x0=j,x1=j, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]),y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]-as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), y1=2^(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+    # use IQR
+#    segments(x0=j,x1=j, y0=2^(as.vector(curQuart)[j]),y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curQuart)[j]), y1=2^(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=2^(as.vector(curThreeQuart)[j]), y1=2^(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=xVals[j],x1=xVals[j], y0=(as.vector(curQuart)[j]),y1=(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=xVals[j]-0.05, x1=xVals[j]+0.05, y0=(as.vector(curQuart)[j]), y1=(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=xVals[j]-0.05, x1=xVals[j]+0.05, y0=(as.vector(curThreeQuart)[j]), y1=(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+  }
+  # add a line to show progression within each group/status
+#  lines(x=c(1,3,5), y=2^curMeans[c(1,3,5)], lwd=2)
+#  lines(x=c(2,4,6), y=2^curMeans[c(2,4,6)], col="purple3", lwd=2)
+#  lines(x=c(4,7), y=2^curMeans[c(4,7)], col="purple3", lty=2, lwd=2)
+  lines(x=xVals[c(1,3,5)], y=curMeans[c(1,3,5)], lwd=2)
+  lines(x=xVals[c(2,4,6)], y=curMeans[c(2,4,6)], col="purple3", lwd=2)
+  lines(x=xVals[c(4,7)], y=curMeans[c(4,7)], col="purple3", lty=2, lwd=2)
+  
+  dev.off()
+}
+
+```
+
+## Look at Pulmonary Function
+## SRP - stop here?
+
+```{r PF}
+
+# read in pulmonary function file
+PFTs<-read.csv(file=file.path(dataDir, "NewProjects/pulmFunc_fullCohort.csv"), row.names=1) ### Fix 
+nasalDes<-read.csv(file=file.path(dataDir, "NewProjects/fullCohort.nasal.blood.update_AddBloodNasal_wclinicaldata_fulldesignfile_12_13_17.csv")) ## Fix
+all(colnames(PFTs)==nasalDes$library.sampleId) # T
+
+table(PFTs[4,]==nasalDes$FEV1.Percent.Predicted.at.Visit) # 392 T
+
+# can keep steroids at visit B
+
+# need to set up visit 0 as case/control
+nasalDes$Case.or.Control.Status.Original<-as.character(nasalDes$Case.or.Control.Status.Original)
+sum(nasalDes$Case.or.Control.Status.Original=="0") # 106
+visit0StatusIndex<-which(nasalDes$Case.or.Control.Status.Original=="0")
+# need to count any visit 0 that is in both case and control as both
+for (i in 1:length(visit0StatusIndex))
+{
+  curIndex<-visit0StatusIndex[i]
+  curID<-as.character(nasalDes$PtID[curIndex])
+  matchIndex<-which(curID==as.character(nasalDes$PtID) & nasalDes$Visit!="Visit 0")
+  if (length(unique(as.character(nasalDes$Case.or.Control.Status.Original[matchIndex])))==1)
+  {
+    nasalDes$Case.or.Control.Status.Original[curIndex]<-unique(as.character(nasalDes$Case.or.Control.Status.Original[matchIndex]))
+  }
+  else
+  {
+#    # because V0 is a case if it's ever a case for visit A
+#    nasalDes$Case.or.Control.Status.Original[curIndex]<-"Case"
+    # need to double count this visit 0 as both case and control
+    nasalDes$Case.or.Control.Status.Original[curIndex]<-"Control"
+    # now add second value for case
+    nasalDes<-rbind(nasalDes, nasalDes[curIndex,])
+    nasalDes$Case.or.Control.Status.Original[nrow(nasalDes)]<-"Case"
+  }
+}
+sum(nasalDes$Case.or.Control.Status.Original=="") # 0
+
+table(nasalDes$Visit, nasalDes$Case.or.Control.Status.Original)
+
+table(nasalDes$Visit[-which(is.na(nasalDes$FEV1.Percent.Predicted.at.Visit))], nasalDes$Case.or.Control.Status.Original[-which(is.na(nasalDes$FEV1.Percent.Predicted.at.Visit))])
+
+plotCN<-c("FEV1.Percent.Predicted.at.Visit","FEV1..FVC.at.Visit")
+plotFN<-c("FEV1Percent","FEV1FVC")
+for (i in 1:length(plotCN))
+{
+  curFN<-plotFN[i]
+  curIndex<-which(plotCN[i]==colnames(nasalDes))
+#  fileNameSVG<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig2/",curFN,".svg",sep="")
+#  svg(filename=fileNameSVG, width=4.5, height=4.5, pointsize=8)
+#  fileNamePDF<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig2/",curFN,".pdf",sep="")
+#  pdf(file=fileNamePDF, width=4.5, height=4.5, pointsize=8)
+  fileNamePNG<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig2/",curFN,".png", sep="")
+  png(file=fileNamePNG, units="in", width=4.5, height=4.5, res=300, pointsize=8)
+  origMar<-par("mar")
+  par(mar=origMar*c(1.1,1,1,1))
+  
+  nasalDes$Case.or.Control.Status.Original<-factor(as.character(nasalDes$Case.or.Control.Status.Original), levels=c("Control","Case"))
+  # need to calculate values
+  curMeans<-tapply(nasalDes[,curIndex], list(nasalDes$Case.or.Control.Status.Original, nasalDes$Visit), mean, na.rm=T)
+  curSD<-tapply(nasalDes[,curIndex], list(nasalDes$Case.or.Control.Status.Original, nasalDes$Visit), sd, na.rm=T)
+  curLen<-tapply(nasalDes[-which(is.na(nasalDes[,curIndex])),curIndex], list(nasalDes$Case.or.Control.Status.Original[-which(is.na(nasalDes[,curIndex]))], nasalDes$Visit[-which(is.na(nasalDes[,curIndex]))]), length)
+  curSE<-curSD/sqrt(curLen)
+  curQuart<-tapply(nasalDes[,curIndex], list(nasalDes$Case.or.Control.Status.Original, nasalDes$Visit), quantile, 0.25, na.rm=T)
+  curThreeQuart<-tapply(nasalDes[,curIndex], list(nasalDes$Case.or.Control.Status.Original, nasalDes$Visit), quantile, 0.75, na.rm=T)
+#  curCI<-qt(0.975, df=curLen-1)*curSE
+  curCI<-2*curSE
+#  curCI<-2*curSD
+  allCols<-c("black","red","black","red","black","red")
+  allVals<-c((as.vector(curMeans)-as.vector(curCI)), (as.vector(curMeans)+as.vector(curCI)), nasalDes[,curIndex])
+  minVal<-min(allVals)*0.99
+  maxVal<-max(allVals)*1.01
+  library(scales)
+  beeswarm(nasalDes[,curIndex] ~ nasalDes$Case.or.Control.Status.Original + nasalDes$Visit, pch=19, cex=0.6, col=alpha(c("gray","pink","gray","pink","gray","pink"), 1), axes=FALSE, xlab="", ylab="Normalized Expression", main=curFN)
+  points(x=1:6, y=as.vector(curMeans), pch=19, col=allCols, cex=2, ylab="Normalized Expression")
+  box()
+  axis(2, las=2)
+  axis(1, las=2, at=1:6, labels=c("Control.Visit 0","Case.Visit 0","Control.Visit a","Case.Visit a","Control.Visit b", "Case.Visit b"))
+  for (j in 1:6)
+  {
+    # use SE or SD
+#    segments(x0=j,x1=j, y0=(as.vector(curMeans)[j]-as.vector(curCI)[j]),y1=(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=(as.vector(curMeans)[j]-as.vector(curCI)[j]), y1=(as.vector(curMeans)[j]-as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=(as.vector(curMeans)[j]+as.vector(curCI)[j]), y1=(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+    # use IQR
+    segments(x0=j,x1=j, y0=(as.vector(curQuart)[j]),y1=(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=j-0.05, x1=j+0.05, y0=(as.vector(curQuart)[j]), y1=(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=j-0.05, x1=j+0.05, y0=(as.vector(curThreeQuart)[j]), y1=(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+  }
+  # add a line to show progression within each group/status
+  lines(x=c(1,3,5), y=curMeans[1,], lwd=2)
+  lines(x=c(2,4,6), y=curMeans[2,], col="red", lwd=2)
+  dev.off()
+}
+
+
+# REDO with trying to make visits more separated in plot
+for (i in 1:length(plotCN))
+{
+  curFN<-plotFN[i]
+  curIndex<-which(plotCN[i]==colnames(nasalDes))
+#  fileNameSVG<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig2/",curFN,".svg",sep="")
+#  svg(filename=fileNameSVG, width=4.5, height=4.5, pointsize=8)
+#  fileNamePDF<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig2/",curFN,".pdf",sep="")
+#  pdf(file=fileNamePDF, width=4.5, height=4.5, pointsize=8)
+  fileNamePNG<-paste("/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig2/",curFN,".png", sep="")
+  png(file=fileNamePNG, units="in", width=4.5, height=4.5, res=300, pointsize=8)
+  origMar<-par("mar")
+  par(mar=origMar*c(1.2,1,1,1))
+  
+  nasalDes$Case.or.Control.Status.Original<-factor(as.character(nasalDes$Case.or.Control.Status.Original), levels=c("Control","Case"))
+  # need to calculate values
+  curMeans<-tapply(nasalDes[,curIndex], list(nasalDes$Case.or.Control.Status.Original, nasalDes$Visit), mean, na.rm=T)
+  curSD<-tapply(nasalDes[,curIndex], list(nasalDes$Case.or.Control.Status.Original, nasalDes$Visit), sd, na.rm=T)
+  curLen<-tapply(nasalDes[-which(is.na(nasalDes[,curIndex])),curIndex], list(nasalDes$Case.or.Control.Status.Original[-which(is.na(nasalDes[,curIndex]))], nasalDes$Visit[-which(is.na(nasalDes[,curIndex]))]), length)
+  curSE<-curSD/sqrt(curLen)
+  curQuart<-tapply(nasalDes[,curIndex], list(nasalDes$Case.or.Control.Status.Original, nasalDes$Visit), quantile, 0.25, na.rm=T)
+  curThreeQuart<-tapply(nasalDes[,curIndex], list(nasalDes$Case.or.Control.Status.Original, nasalDes$Visit), quantile, 0.75, na.rm=T)
+#  curCI<-qt(0.975, df=curLen-1)*curSE
+  curCI<-2*curSE
+#  curCI<-2*curSD
+  allCols<-c("black","red","black","red","black","red")
+  allVals<-c((as.vector(curMeans)-as.vector(curCI)), (as.vector(curMeans)+as.vector(curCI)), nasalDes[,curIndex])
+  minVal<-min(allVals)*0.99
+  maxVal<-max(allVals)*1.01
+  
+  xVals<-c(1.2,1.8,3.2,3.8,5.2,5.8)
+  library(scales)
+#  beeswarm(nasalDes[,curIndex] ~ nasalDes$Case.or.Control.Status.Original + nasalDes$Visit, pch=19, cex=0.6, col=alpha(c("gray","pink","gray","pink","gray","pink"), 1), axes=FALSE, xlab="", ylab="Normalized Expression", main=curFN)
+  beeswarm(nasalDes[,curIndex] ~ nasalDes$Case.or.Control.Status.Original + nasalDes$Visit, pch=19, cex=0.4, col=alpha(c("gray","pink","gray","pink","gray","pink"), 1), axes=FALSE, xlab="", ylab=curFN, main=curFN, xlim=c(0.7,6.3), at=xVals)
+  points(x=xVals, y=as.vector(curMeans), pch=19, col=allCols, cex=2, ylab="Normalized Expression")
+  box()
+  axis(2, las=2)
+  axis(1, las=2, at=xVals, labels=c("Control.Visit 0","Case.Visit 0","Control.Visit a","Case.Visit a","Control.Visit b", "Case.Visit b"))
+  for (j in 1:6)
+  {
+    # use SE or SD
+#    segments(x0=j,x1=j, y0=(as.vector(curMeans)[j]-as.vector(curCI)[j]),y1=(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=(as.vector(curMeans)[j]-as.vector(curCI)[j]), y1=(as.vector(curMeans)[j]-as.vector(curCI)[j]), col=allCols[j], lwd=2)
+#    segments(x0=j-0.05, x1=j+0.05, y0=(as.vector(curMeans)[j]+as.vector(curCI)[j]), y1=(as.vector(curMeans)[j]+as.vector(curCI)[j]), col=allCols[j], lwd=2)
+    # use IQR
+    segments(x0=xVals[j],x1=xVals[j], y0=(as.vector(curQuart)[j]),y1=(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=xVals[j]-0.05, x1=xVals[j]+0.05, y0=(as.vector(curQuart)[j]), y1=(as.vector(curQuart)[j]), col=allCols[j], lwd=2)
+    segments(x0=xVals[j]-0.05, x1=xVals[j]+0.05, y0=(as.vector(curThreeQuart)[j]), y1=(as.vector(curThreeQuart)[j]), col=allCols[j], lwd=2)
+  }
+  # add a line to show progression within each group/status
+  lines(x=xVals[c(1,3,5)], y=curMeans[1,], lwd=2)
+  lines(x=xVals[c(2,4,6)], y=curMeans[2,], col="red", lwd=2)
+  dev.off()
+}
+
+# try building a model
+library(nlme)
+summary(lme(FEV1.Percent.Predicted.at.Visit ~ Visit + Case.or.Control.Status.Original, data=nasalDes, random=~1|PtID, na.action=na.omit))$tTable
+# now subset to visit B only
+nasalDesB<-nasalDes[which(nasalDes$Visit=="Visit b"),]
+summary(lme(FEV1.Percent.Predicted.at.Visit ~ Case.or.Control.Status.Original, data=nasalDesB, random=~1|PtID, na.action=na.omit))$tTable
+# subset to visit A only
+nasalDesA<-nasalDes[which(nasalDes$Visit=="Visit a"),]
+summary(lme(FEV1.Percent.Predicted.at.Visit ~ Case.or.Control.Status.Original, data=nasalDesA, random=~1|PtID, na.action=na.omit))$tTable
+
+
+summary(lme(FEV1..FVC.at.Visit ~ Visit + Case.or.Control.Status.Original, data=nasalDes, random=~1|PtID, na.action=na.omit))$tTable
+# now subset to visit B only
+summary(lme(FEV1..FVC.at.Visit ~ Case.or.Control.Status.Original, data=nasalDesB, random=~1|PtID, na.action=na.omit))$tTable
+summary(lme(FEV1..FVC.at.Visit ~ Case.or.Control.Status.Original, data=nasalDesA, random=~1|PtID, na.action=na.omit))$tTable
+
+```
+
+## Make Legends
+
+```{r makeLegend}
+
+# legends for fig 2/3
+png(file="/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig2/fig2_3_legend.png", height=0.4, width=0.45, units="in", res=300, pointsize=8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=19, col=c("red","black"), legend=(c("Ex+","Ex-")), cex=0.9, pt.cex=1.1)
+dev.off()
+
+svg(file="/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig2/fig2_3_legend.svg", height=0.4, width=0.45, pointsize=8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=19, col=c("red","black"), legend=(c("Ex+","Ex-")), cex=0.9, pt.cex=1.1)
+dev.off()
+
+# legend for fig 4
+png(file="/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig4/fig4A_legend.png", height=0.4, width=0.65, units="in", res=300, pointsize=8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, lty=1, col=c("red","black"), legend=(c("Ex+","Ex-")), cex=0.9, pt.cex=1.1)
+dev.off()
+
+svg(file="/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig4/fig4A_legend.svg", height=0.4, width=0.65, pointsize=8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, lty=1, col=c("red","black"), legend=(c("Ex+","Ex-")), cex=0.9, pt.cex=1.1)
+dev.off()
+
+png(file="/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig4/fig4B_legend.png", height=0.4, width=0.75, units="in", res=300, pointsize=8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, lty=1, col=c("purple","black"), legend=(c("V+Ex+","V+Ex-")), cex=0.9, pt.cex=1.1)
+dev.off()
+
+svg(file="/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig4/fig4B_legend.svg", height=0.4, width=0.75, pointsize=8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, lty=1, col=c("purple","black"), legend=(c("V+Ex+","V+Ex-")), cex=0.9, pt.cex=1.1)
+dev.off()
+
+# legend for fig 6
+png(file="/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig6/fig6A_legend.png", height=0.53, width=0.85, units="in", res=300, pointsize=8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=c(19,2,19), col=c("red","red","black"), legend=(c("Ex+ pre-CS","Ex+ post-CS","Ex-")), cex=0.9, pt.cex=1.1)
+dev.off()
+
+svg(file="/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig6/fig6A_legend.svg", height=0.53, width=0.85, pointsize=8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=c(19,2,19), col=c("red","red","black"), legend=(c("Ex+ pre-CS","Ex+ post-CS","Ex-")), cex=0.9, pt.cex=1.1)
+dev.off()
+
+png(file="/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig6/fig6B_legend.png", height=0.53, width=1, units="in", res=300, pointsize=8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=c(19,2,19), col=c("purple","purple","black"), legend=(c("V+ Ex+ pre-CS","V+ Ex+ post-CS","V+ Ex-")), cex=0.9, pt.cex=1.1)
+dev.off()
+
+svg(file="/Users/ewhalen/Box Sync/NewProjects/MUPPITS/Fig6/fig6B_legend.svg", height=0.53, width=1, pointsize=8)
+par(mai=c(0,0,0,0))
+plot(1, type="n", xlab="", ylab="", xlim=c(0, 10), ylim=c(0, 2), axes=FALSE)
+legend(x=0, y=2, pch=c(19,2,19), col=c("purple","purple","black"), legend=(c("V+ Ex+ pre-CS","V+ Ex+ post-CS","V+ Ex-")), cex=0.9, pt.cex=1.1)
+dev.off()
+
+```
+

@@ -1,0 +1,456 @@
+---
+title: "MUPPITS Tempus Mean/SE Plots Module Level Visits A&B"
+author: "Elizabeth Whalen"
+date: "11/17/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in Data
+
+```{r readData}
+
+dataDir <- "../data"
+resultsDir <- "../results"
+
+tGS<-read.csv(file=file.path(dataDir, "tempus_Combine4Phases/geneSets_v2_using176samples/tempus_geneSetsByAssignedCell_v2.csv"))
+
+# read in voom, 
+tGSmeans<-read.csv(file=file.path(dataDir, "tempusGeneSets_387samples.csv"), row.names=1)
+
+all(rownames(tGSmeans) %in% tGS$geneSet)
+
+tDesign<-read.csv(file=file.path(dataDir, "tempus_design_all4Phases_387samples_update.csv"))
+
+#load(file="/Users/ewhalen/Box Sync/Projects/ICAC/MUPPITS/tempus_Combine4Phases/BestVersion/tempusVoom_387samples.RData")  
+#tVoom<-tempusVoomNoRepsv2
+
+#all(colnames(tVoom)==tDesign$LibraryID)
+all(colnames(tGSmeans)==tDesign$LibraryID)
+
+```
+
+## Remove Batch Effects
+
+```{r removeBatch}
+
+# remove visit 0 and then remove batch effects
+rem0<-which(tDesign$Visit=="Visit 0")
+tDesignAB<-tDesign[-rem0,]
+tGSmeansAB<-tGSmeans[,-rem0]
+all(tDesignAB$library.sampleId==colnames(tGSmeansAB))
+  
+# set up viral type
+tDesignAB$Viral.Type.at.Visit2<-factor(as.character(tDesignAB$Viral.Type.at.Visit2), levels=c("Non-viral","Viral"))
+table(tDesignAB$Viral.Type.at.Visit2)
+
+# set up cell percentages - they are already numeric and % 
+# NOTE: a few do not add up to 100 - should these be changed?
+range(apply(tDesignAB[,70:74], 1, sum), na.rm=T)
+hist(apply(tDesignAB[,70:74], 1, sum))
+which(apply(tDesignAB[,70:74], 1, sum) < 98)
+sort(apply(tDesignAB[,70:74], 1, sum))
+
+remIndex<-unique(c(which(is.na(tDesignAB$Blood.Eosinophil.Differential)), which(is.na(tDesignAB$Blood.Lymphocyte.Differential)), which(is.na(tDesignAB$Blood.Monocyte.Differential)), which(is.na(tDesignAB$Blood.Basophil.Differential)), which(is.na(tDesignAB$Viral.Type.at.Visit2)), which(is.na(tDesignAB$Viral.Type.at.Visit2))))
+length(remIndex) # lost 65 out of 285 samples
+dim(tDesignAB)
+
+# missing mainly visit B
+table(tDesignAB$Visit[which(is.na(tDesignAB$Blood.Eosinophil.Differential))])
+
+tDesignAB$Visit<-factor(as.character(tDesignAB$Visit), levels=c("Visit a","Visit b"))
+tDesignAB$Case.or.Control.Status.Original<-factor(as.character(tDesignAB$Case.or.Control.Status.Original), levels=c("Control","Case"))
+
+rbeMM<-model.matrix(~ Blood.Eosinophil.Differential + Blood.Lymphocyte.Differential + Blood.Monocyte.Differential + Blood.Basophil.Differential + Visit + libCounts, data=tDesignAB[-remIndex,])
+dim(rbeMM)
+rbeMM[1:3,]
+
+keepmm<-model.matrix(~Case.or.Control.Status.Original + Viral.Type.at.Visit2, data=tDesignAB[-remIndex,])
+dim(keepmm)
+keepmm[1:3,]
+
+# remove batch effect at module level
+tGSmeansABRBE<-removeBatchEffect(tGSmeansAB[,-remIndex], covariates=rbeMM[,-1], design=keepmm)
+
+dim(tGSmeansABRBE)
+tGSmeansABRBE[1:5,1:5]
+
+# also need to subset the tempus design file
+tDesignABRBE<-tDesignAB[-remIndex,]
+all(colnames(tGSmeansABRBE)==tDesignABRBE$library.sampleId)
+
+
+# also remove virus type as a batch effect
+rbeMMV<-model.matrix(~ Blood.Eosinophil.Differential + Blood.Lymphocyte.Differential + Blood.Monocyte.Differential + Blood.Basophil.Differential + Viral.Type.at.Visit2 + Visit + libCounts, data=tDesignAB[-remIndex,])
+dim(rbeMMV)
+rbeMMV[1:3,]
+
+keepmmV<-model.matrix(~Case.or.Control.Status.Original, data=tDesignAB[-remIndex,])
+dim(keepmmV)
+keepmmV[1:3,]
+
+# remove batch effect at voom level
+tGSmeansABRBEV<-removeBatchEffect(tGSmeansAB[,-remIndex], covariates=rbeMMV[,-1], design=keepmmV)
+
+dim(tGSmeansABRBEV)
+tGSmeansABRBEV[1:5,1:5]
+
+# make sure everything matches
+all(colnames(tGSmeansABRBEV)==tDesignABRBE$library.sampleId)
+
+```
+
+## Remove Cases on Steroids
+
+```{r removeCaseOnCS}
+
+remCS<-which(tDesignABRBE$CSteroid.Start.Relative.to.Visit=="Before")
+tGSmeansABRBE<-tGSmeansABRBE[,-remCS]
+tGSmeansABRBEV<-tGSmeansABRBEV[,-remCS]
+tDesignABRBE<-tDesignABRBE[-remCS,]
+all(tDesignABRBE$library.sampleId==colnames(tGSmeansABRBE))
+all(tDesignABRBE$library.sampleId==colnames(tGSmeansABRBEV))
+
+```
+
+## Remove Zero Modules
+
+```{r removeZeroMods}
+
+remMods<-c("neut0","lymp0","eos0","mono0","unma0")
+tGSmeansABRBE<-tGSmeansABRBE[-which(rownames(tGSmeansABRBE) %in% remMods),]
+tGSmeansABRBEV<-tGSmeansABRBEV[-which(rownames(tGSmeansABRBEV) %in% remMods),]
+
+```
+
+## Mean/SE plots
+
+### Visits A & B: case vs. control
+
+```{r visitABcaseControl}
+
+table(tDesignABRBE$Case.or.Control.Status.Original)
+
+modNames<-rownames(tGSmeansABRBE)
+modNames[17:42]<-paste("m",substr(modNames[17:42], 5, nchar(modNames[17:42])),sep="")
+modNames<-paste(modNames,".b",sep="")
+
+for (i in 1:nrow(tGSmeansABRBEV))
+{
+  curMod<-rownames(tGSmeansABRBEV)[i]
+  curFN<-paste(curMod, ".png", sep="")
+
+  statMean<-tapply(tGSmeansABRBEV[i,], tDesignABRBE$Case.or.Control.Status.Original, mean)  
+  statSD<-tapply(tGSmeansABRBEV[i,], tDesignABRBE$Case.or.Control.Status.Original, sd)
+  statSE<-statSD/sqrt(tapply(tGSmeansABRBEV[i,], tDesignABRBE$Case.or.Control.Status.Original, length))
+  upLim<-2^(statMean + 1.96*statSE)
+  lowLim<-2^(statMean - 1.96*statSE)
+  
+  png(file=paste(file.path(resultsDir, "tempus_boxplots_meanSEplots_moduleLevel_visitAB_caseVcontrol_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:2, y=2^statMean, pch=19, col=c(rgb(0,0,0),rgb(1,0,0)), cex=3, xlim=c(0.7,2.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:2, labels=c("Control","Case"))
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(1,0,0,alpha=0.5), border=rgb(1,0,0,alpha=0.5))
+  
+  points(x=1:2, y=2^statMean, pch=19, col=c(rgb(0,0,0),rgb(1,0,0)), cex=3)
+  dev.off()
+}
+
+```
+
+### Visits A & B: case vs. control V virus + vs. -
+
+```{r visitABcaVcoVposVneg}
+
+table(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2)
+
+for (i in 1:nrow(tGSmeansABRBE))
+{
+  curMod<-rownames(tGSmeansABRBE)[i]
+  curFN<-paste(curMod, ".png", sep="")
+
+  statMean<-tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), mean)  
+  statSD<-tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), sd)
+  statSE<-statSD/sqrt(tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  png(file=paste(file.path(resultsDir, "tempus_boxplots_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(221/255,160/255,221/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.Non-viral","Case.Non-viral","Control.Viral","Case.Viral"), cex.axis=0.6)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(221/255,160/255,221/255, alpha=0.5), border=rgb(221/255,160/255,221/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(160/255,32/255,240/255,alpha=0.5), border=rgb(160/255,32/255,240/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(221/255,160/255,221/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3)
+  dev.off()
+}
+
+```
+
+
+### Visits A & B: case vs. control V virus + vs. - New Colors and plotting characters (5/11/18)
+
+```{r visitABcaVcoVposVneg}
+
+table(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2)
+
+for (i in 1:nrow(tGSmeansABRBE))
+{
+  curMod<-rownames(tGSmeansABRBE)[i]
+  curFN<-paste(curMod, ".png", sep="")
+
+  statMean<-tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), mean)  
+  statSD<-tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), sd)
+  statSE<-statSD/sqrt(tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  png(file=paste(file.path(resultsDir, "tempus_boxplots_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_newColor_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=c(15,15,19,19), col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.Non-viral","Case.Non-viral","Control.Viral","Case.Viral"), cex.axis=0.6)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(197/255,90/255,17/255, alpha=0.5), border=rgb(197/255,90/255,17/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(160/255,32/255,240/255,alpha=0.5), border=rgb(160/255,32/255,240/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=c(15,15,19,19), col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3)
+  dev.off()
+}
+
+
+# 1/14/19 remake as svg for paper
+for (i in 1:nrow(tGSmeansABRBE))
+{
+  curMod<-rownames(tGSmeansABRBE)[i]
+  curFN<-paste(curMod, ".svg", sep="")
+
+  statMean<-tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), mean)  
+  statSD<-tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), sd)
+  statSE<-statSD/sqrt(tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  svg(file=paste(file.path(resultsDir, "tempus_boxplots_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_newColor_svg_"), curFN, sep=""), width=3, height=4, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=c(15,15,19,19), col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.Non-viral","Case.Non-viral","Control.Viral","Case.Viral"), cex.axis=0.6)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(197/255,90/255,17/255, alpha=0.5), border=rgb(197/255,90/255,17/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(160/255,32/255,240/255,alpha=0.5), border=rgb(160/255,32/255,240/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=c(15,15,19,19), col=c(rgb(84/255,84/255,84/255),rgb(197/255,90/255,17/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3)
+  dev.off()
+}
+
+```
+
+
+### Visits A & B: case vs. control V virus + vs. - Lower Limit is not Set to Zero
+
+```{r visitABcaVcoVposVnegNot0}
+
+table(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2)
+
+for (i in 1:nrow(tGSmeansABRBE))
+{
+  curMod<-rownames(tGSmeansABRBE)[i]
+  curFN<-paste(curMod, ".png", sep="")
+
+  statMean<-tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), mean)  
+  statSD<-tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), sd)
+  statSE<-statSD/sqrt(tapply(tGSmeansABRBE[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Viral.Type.at.Visit2), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  png(file=paste(file.path(resultsDir, "tempus_boxplots_meanSEplots_moduleLevel_visitAB_caseVcontrol_virusPosVNeg_LLnotSetTo0_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(221/255,160/255,221/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3, xlim=c(0.7,4.3), ylim=c(min(lowLim), max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.Non-viral","Case.Non-viral","Control.Viral","Case.Viral"), cex.axis=0.6)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(221/255,160/255,221/255, alpha=0.5), border=rgb(221/255,160/255,221/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(160/255,32/255,240/255,alpha=0.5), border=rgb(160/255,32/255,240/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(221/255,160/255,221/255),rgb(0,0,0),rgb(160/255,32/255,240/255)), cex=3)
+  dev.off()
+}
+
+```
+
+### Visits A & B: case vs. control V bmi 95th percentile yes vs. no
+
+```{r visitABbmi}
+
+# set up BMI percentile cutoff of 95th percentile
+hist(tDesignABRBE$BMI.Percentile.at.Visit, breaks=20)
+tDesignABRBE$BMIcat95<-"low"
+tDesignABRBE$BMIcat95[which(tDesignABRBE$BMI.Percentile.at.Visit > 95)]<-"high"
+tDesignABRBE$BMIcat95[which(is.na(tDesignABRBE$BMI.Percentile.at.Visit))]<-NA
+table(tDesignABRBE$BMIcat95)
+tDesignABRBE$BMIcat95<-factor(tDesignABRBE$BMIcat95, levels=c("low","high"))
+
+table(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$BMIcat95)
+
+# visits A&B: case vs. control as well as BMI95th percentile
+for (i in 1:nrow(tGSmeansABRBEV))
+{
+  curMod<-rownames(tGSmeansABRBEV)[i]
+  curFN<-paste(curMod, ".png", sep="")
+  
+  statMean<-tapply(tGSmeansABRBEV[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$BMIcat95), mean) 
+  statSD<-tapply(tGSmeansABRBEV[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$BMIcat95), sd)
+  statSE<-statSD/sqrt(tapply(tGSmeansABRBEV[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$BMIcat95), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  # chose darkolivegreen3 for case BMI low over darkolivegreen1 (too light)
+  png(file=paste(file.path(resultsDir, "tempus_boxplots_meanSEplots_moduleLevel_visitAB_caseVcontrol_BMI95th_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(162/255,205/255,90/255),rgb(0,0,0),rgb(85/255,107/255,47/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.lowBMI","Case.lowBMI","Control.highBMI","Case.highBMI"), cex.axis=0.8)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(162/255,205/255,90/255, alpha=0.5), border=rgb(162/255,205/255,90/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(85/255,107/255,47/255,alpha=0.5), border=rgb(85/255,107/255,47/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(162/255,205/255,90/255),rgb(0,0,0),rgb(85/255,107/255,47/255)), cex=3)
+  dev.off()
+}
+
+```
+
+### Visits A & B: case vs. control V Nic Alert 0-1 vs. 2-5
+
+```{r visitABnicAlert}
+
+# set up Nic Alert binary: 0-1 vs. 2-5
+tDesignABRBE$NicAlertBinary<-as.character(tDesignABRBE$NicAlert.at.Visit)
+tDesignABRBE$NicAlertBinary[which(tDesignABRBE$NicAlert.at.Visit %in% c("Level 0 (0-10 ng/mL)","Level 1 (10-30 ng/mL)"))]<-"0-1"
+tDesignABRBE$NicAlertBinary[which(tDesignABRBE$NicAlert.at.Visit %in% c("Level 2 (30-100 ng/mL)","Level 3 (100-200 ng/mL)","Level 4 (200-500 ng/mL)","Level 5 (500-1000 ng/mL)"))]<-"2-5"
+table(tDesignABRBE$NicAlertBinary)
+tDesignABRBE$NicAlertBinary<-factor(tDesignABRBE$NicAlertBinary, levels=c("0-1","2-5"))
+
+table(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$NicAlertBinary)
+
+# visit A: case vs. control as well as Nic Alert
+for (i in 1:nrow(tGSmeansABRBEV))
+{
+  curMod<-rownames(tGSmeansABRBEV)[i]
+  curFN<-paste(curMod, ".png", sep="")
+  
+  statMean<-tapply(tGSmeansABRBEV[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$NicAlertBinary), mean)  
+  statSD<-tapply(tGSmeansABRBEV[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$NicAlertBinary), sd)
+  statSE<-statSD/sqrt(tapply(tGSmeansABRBEV[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$NicAlertBinary), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  png(file=paste(file.path(resultsDir, "tempus_boxplots_meanSEplots_moduleLevel_visitAB_caseVcontrol_NicAlert_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(210/255,105/255,30/255),rgb(0,0,0),rgb(139/255,69/255,19/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.Nic0-1","Case.Nic0-1","Control.Nic2-5","Case.Nic2-5"), cex.axis=0.8)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(210/255,105/255,30/255, alpha=0.5), border=rgb(210/255,105/255,30/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(139/255,69/255,19/255,alpha=0.5), border=rgb(139/255,69/255,19/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(210/255,105/255,30/255),rgb(0,0,0),rgb(139/255,69/255,19/255)), cex=3)
+  dev.off()
+}
+
+```
+
+### Visits A & B: case vs. control V male vs. female
+
+```{r visitABcaVcoVposVneg}
+
+table(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Sex)
+
+for (i in 1:nrow(tGSmeansABRBEV))
+{
+  curMod<-rownames(tGSmeansABRBEV)[i]
+  curFN<-paste(curMod, ".png", sep="")
+  
+  statMean<-tapply(tGSmeansABRBEV[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Sex), mean)  
+  statSD<-tapply(tGSmeansABRBEV[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Sex), sd)
+  statSE<-statSD/sqrt(tapply(tGSmeansABRBEV[i,], list(tDesignABRBE$Case.or.Control.Status.Original, tDesignABRBE$Sex), length))
+  upLim<-as.vector(2^(statMean + 1.96*statSE))
+  lowLim<-as.vector(2^(statMean - 1.96*statSE))
+    
+  png(file=paste(file.path(resultsDir, "tempus_boxplots_meanSEplots_moduleLevel_visitAB_caseVcontrol_Gender_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(255/255,64/255,64/255),rgb(0,0,0),rgb(139/255,35/255,35/255)), cex=3, xlim=c(0.7,4.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:4, labels=c("Control.F","Case.F","Control.M","Case.M"), cex.axis=0.8)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(84/255,84/255,84/255,alpha=0.5), border=rgb(84/255,84/255,84/255,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(255/255,64/255,64/255, alpha=0.5), border=rgb(255/255,64/255,64/255, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=3.98, xright=4.02, ybottom=lowLim[4], ytop=upLim[4], col=rgb(139/255,35/255,35/255,alpha=0.5), border=rgb(139/255,35/255,35/255,alpha=0.5))
+  
+  points(x=1:4, y=as.vector(2^statMean), pch=19, col=c(rgb(84/255,84/255,84/255),rgb(255/255,64/255,64/255),rgb(0,0,0),rgb(139/255,35/255,35/255)), cex=3)
+  dev.off()
+}
+
+```
+
+### Visits A & B case fast vs. case slow vs. control
+
+```{r rapidCaseAB}
+
+tDesignABRBE$CaseControlTrip<-as.character(tDesignABRBE$Case.or.Control.Status.Original)
+tDesignABRBE$CaseControlTrip[which(tDesignABRBE$Case.or.Control.Status.Original=="Case" & tDesignABRBE$Exacerbate.Within.2.Days.of.Cold=="Yes")]<-"RapidCase"
+tDesignABRBE$CaseControlTrip[which(tDesignABRBE$Case.or.Control.Status.Original=="Case" & tDesignABRBE$Exacerbate.Within.2.Days.of.Cold=="No")]<-"SlowCase"
+table(tDesignABRBE$CaseControlTrip)
+tDesignABRBE$CaseControlTrip<-factor(tDesignABRBE$CaseControlTrip, levels=c("Control","SlowCase","RapidCase"))
+
+table(tDesignABRBE$CaseControlTrip)
+
+for (i in 1:nrow(tGSmeansABRBEV))
+{
+  curMod<-rownames(tGSmeansABRBEV)[i]
+  curFN<-paste(curMod, ".png", sep="")
+  
+  statMean<-tapply(tGSmeansABRBEV[i,], tDesignABRBE$CaseControlTrip, mean)  
+  statSD<-tapply(tGSmeansABRBEV[i,], tDesignABRBE$CaseControlTrip, sd)
+  statSE<-statSD/sqrt(tapply(tGSmeansABRBEV[i,], tDesignABRBE$CaseControlTrip, length))
+  upLim<-2^(statMean + 1.96*statSE)
+  lowLim<-2^(statMean - 1.96*statSE)
+  
+  png(file=paste(file.path(resultsDir, "tempus_boxplots_meanSEplots_moduleLevel_visitAB_caseSplitBySpeedVcontrol_"), curFN, sep=""), units="in", width=3, height=4, res=300, pointsize=8)
+  plot(x=1:3, y=as.vector(2^statMean), pch=19, col=c(rgb(0,0,0), rgb(0,1,0),rgb(0/255,139/255,0/255)), cex=3, xlim=c(0.7,3.3), ylim=c(0, max(upLim)), xlab="", axes=FALSE, ylab="Normalized Gene Expression", main=modNames[i])
+  box()
+  axis(1, at=1:3, labels=c("Control","SlowCase","RapidCase"), cex.axis=1)
+  axis(2, las=2)
+  # need to add segments for error bars
+  rect(xleft=0.98, xright=1.02, ybottom=lowLim[1], ytop=upLim[1], col=rgb(0,0,0,alpha=0.5), border=rgb(0,0,0,alpha=0.5))
+  rect(xleft=1.98, xright=2.02, ybottom=lowLim[2], ytop=upLim[2], col=rgb(0,1,0, alpha=0.5), border=rgb(0,1,0, alpha=0.5))
+  rect(xleft=2.98, xright=3.02, ybottom=lowLim[3], ytop=upLim[3], col=rgb(0/255,139/255,0/255,alpha=0.5), border=rgb(0/255,139/255,0/255,alpha=0.5))
+  
+  points(x=1:3, y=as.vector(2^statMean), pch=19, col=c(rgb(0,0,0), rgb(0,1,0),rgb(0/255,139/255,0/255)), cex=3)
+  dev.off()
+}
+
+```

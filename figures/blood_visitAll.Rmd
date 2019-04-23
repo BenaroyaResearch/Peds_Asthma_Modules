@@ -1,0 +1,484 @@
+---
+title: 'Blood: All Visits Study of PC Correlation'
+author: "Elizabeth Whalen"
+date: "1/19/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in Data
+
+```{r readData}
+
+dataDir <- "../data"
+resultsDir <- "../results"
+
+bloodGS<-read.csv(file=file.path(dataDir, "tempusGeneSets_387samples.csv"), row.names=1)
+bloodDesign<-read.csv(file=file.path(dataDir, "tempus_design_all4Phases_387samples_update2.csv"))
+all(colnames(bloodGS)==bloodDesign$LibraryID)
+
+```
+
+## PCA on Gene Set 
+
+```{r pcaGS}
+
+bloodPCA<-prcomp(t(bloodGS), center=TRUE, scale=TRUE)
+
+bpData<-(bloodPCA$sdev^2/(sum(bloodPCA$sdev^2)))[1:10]
+names(bpData)<-paste("PC", 1:10, sep="")
+barplot(bpData, ylab="Variance Explained (%)", las=2, main="Blood All Visits")
+
+# do we have case/control status for all visits? no, need to add visit 0
+table(bloodDesign$Case.or.Control.Status.Original)
+
+# does this match what I would get if I used any A with case is a case?
+bloodDesign$CaseControlV0BasedOnVa<-as.character(bloodDesign$Case.or.Control.Status.Original)
+indivs<-as.character(bloodDesign$Subject.Identifier.for.the.Study)
+for (i in 1:length(indivs))
+{
+  curID<-indivs[i]
+  curIndex<-which(bloodDesign$Subject.Identifier.for.the.Study==curID)
+  curIndex0<-which(bloodDesign$Subject.Identifier.for.the.Study==curID & bloodDesign$Visit=="Visit 0")
+  if ("Case" %in% bloodDesign$Case.or.Control.Status.Original[curIndex])
+  {
+    if (length(curIndex0)==1)
+      bloodDesign$CaseControlV0BasedOnVa[curIndex0]<-"Case"
+  }
+  else
+  {
+    if (length(curIndex0)==1)
+      bloodDesign$CaseControlV0BasedOnVa[curIndex0]<-"Control"
+  }
+}
+table(bloodDesign$CaseControlV0BasedOnVa)
+
+```
+
+## Plot PCA Colored by Site
+
+```{r plotPCA}
+
+curCol<-rep("black", nrow(bloodDesign))
+curCol[which(bloodDesign$Study.Site=="ICAC - Chicago")]<-"red"
+curCol[which(bloodDesign$Study.Site=="ICAC - Cincinnati")]<-"orange"
+curCol[which(bloodDesign$Study.Site=="ICAC - Dallas")]<-"yellow"
+curCol[which(bloodDesign$Study.Site=="ICAC - Denver")]<-"green"
+curCol[which(bloodDesign$Study.Site=="ICAC - Detroit")]<-"blue"
+curCol[which(bloodDesign$Study.Site=="ICAC - New York")]<-"purple"
+curCol[which(bloodDesign$Study.Site=="ICAC - St. Louis")]<-"pink"
+curCol[which(bloodDesign$Study.Site=="ICAC - Washington DC")]<-"gray"
+table(curCol)
+
+plot(x=bloodPCA$x[,1], y=bloodPCA$x[,2], xlab="PC1 (28.7%)", ylab="PC2 (21.8%)", pch=19, col=curCol, main="PCA of MUPPITS Blood")
+legend(x=10, y=12, pch=19, col=c("black","red","orange","yellow","green","blue","purple","pink","gray"), legend=c("Boston","Chicago","Cincinnati","Dallas","Denver","Detroit","New York","St. Louis","DC"))
+
+# look at boxplot of PC1, PC2, and PC3 by site
+pdf(file="/Users/ewhalen/Box Sync/Projects/ICAC/MUPPITS/tempus_Combine4Phases/PCAplotBySite.pdf")
+boxplot(bloodPCA$x[,1] ~ bloodDesign$Study.Site, las=2, pch=19, ylab="PC1 (28.7%)", main="PCA of Blood Samples By Site")
+for (i in seq(-5,15,5))
+  abline(h=i, col="gray", lty=2)
+
+boxplot(bloodPCA$x[,2] ~ bloodDesign$Study.Site, las=2, pch=19, ylab="PC2 (21.8%)", main="PCA of Blood Samples By Site")
+for (i in seq(-5,15,5))
+  abline(h=i, col="gray", lty=2)
+
+boxplot(bloodPCA$x[,3] ~ bloodDesign$Study.Site, las=2, pch=19, ylab="PC3 (18.4%)", main="PCA of Blood Samples By Site")
+for (i in seq(-20,15,5))
+  abline(h=i, col="gray", lty=2)
+dev.off()
+
+```
+
+## Set up variables
+
+```{r importVar}
+
+library(nlme)
+
+contVar<-c("Age.in.years","BMI.Percentile.at.Visit","Days.between.Day.0.and.Cold","FeNO.at.Visit","Blood.Neutrophil.Differential","Blood.Lymphocyte.Differential","Blood.Eosinophil.Differential","Blood.Monocyte.Count","Blood.Basophil.Differential","Blood.Platelet.Count","Blood.Erythrocytes.Count")
+
+# remove enrollment phase because it was empty in the design file
+catVar<-c("Study.Site","Sex","Ethnicity","Season.of.visit","Viral.Type.at.Visit2","Nasal.Steroid.Use.at.Visit","NicAlert.at.Visit","Case.or.Control.Status.Original","Virus.Category","CSteroid.Start.Relative.to.Visit","Visit")
+# note: using CaseControlV0BasedOnVa (which has case/control status for visit 0) instead of Case.or.Control.Status.Original (which has case/control status missing for visit 0) did not make any PC correlations significant
+#catVar<-c("Study.Site","Sex","Ethnicity","Enrollment.phase","Season.of.visit","Viral.Type.at.Visit2","Nasal.Steroid.Use.at.Visit","NicAlert.at.Visit","CaseControlV0BasedOnVa","Virus.Category","CSteroid.Start.Relative.to.Visit","Visit")
+contVar[which(!(contVar %in% colnames(bloodDesign)))]
+catVar[which(!(catVar %in% colnames(bloodDesign)))]
+
+for (i in 1:length(contVar))
+{
+  curCol<-which(colnames(bloodDesign)==contVar[i])
+  bloodDesign[,curCol]<-as.numeric(as.character(bloodDesign[,curCol]))
+}
+
+# now look at cat vars
+# nothing in enrollment phase (empty variable)
+bloodDesign$Season.of.Cold<-factor(as.character(bloodDesign$Season.of.Cold), levels=c("Autumn (Sep.-Nov.)","Spring (Mar.-May)","Summer (Jun.-Aug.)","Winter (Dec.-Feb.)"))
+bloodDesign$CSteroid.Start.Relative.to.Visit<-factor(as.character(bloodDesign$CSteroid.Start.Relative.to.Visit), levels=c("After","Before"))
+bloodDesign$Viral.Type.at.Visit2<-factor(as.character(bloodDesign$Viral.Type.at.Visit2), levels=c("Non-viral","Viral"))
+
+bloodDesign$NicAlert.at.Visit<-as.character(bloodDesign$NicAlert.at.Visit)
+bloodDesign$NicAlert.at.Visit[which(bloodDesign$NicAlert.at.Visit=="0")]<-NA
+bloodDesign$NicAlert.at.Visit[which(bloodDesign$NicAlert.at.Visit=="")]<-NA
+bloodDesign$NicAlert.at.Visit<-as.factor(bloodDesign$NicAlert.at.Visit)
+
+bloodDesign$Case.or.Control.Status.Original<-factor(as.character(bloodDesign$Case.or.Control.Status.Original), levels=c("Control","Case"))
+bloodDesign$CaseControlV0BasedOnVa<-factor(as.character(bloodDesign$CaseControlV0BasedOnVa), levels=c("Control","Case"))
+
+bloodDesign$Virus.Category<-factor(as.character(bloodDesign$Virus.Category),levels=c("Non-viral","Boca","CoV","Other virus","PIV","RSV","RV-A/C","RV-B"))
+
+bloodDesign$Visit<-factor(as.character(bloodDesign$Visit), levels=c("Visit 0","Visit a","Visit b"))
+
+```
+
+## Relationship of PCs to Variables
+
+For all visits, I used linear mixed effects models since most (all?) individuals had multiple visits.
+
+```{r corPCA}
+
+bloodDesign$PC1<-bloodPCA$x[,1]
+bloodDesign$PC2<-bloodPCA$x[,2]
+bloodDesign$PC3<-bloodPCA$x[,3]
+bloodDesign$PC4<-bloodPCA$x[,4]
+bloodDesign$PC5<-bloodPCA$x[,5]
+bloodDesign$PC6<-bloodPCA$x[,6]
+bloodDesign$PC7<-bloodPCA$x[,7]
+
+library(nlme)
+library(r2glmm)
+
+# make a function to run for each PC
+PCcor<-function(bloodDesign, contVar, catVar, curPC="PC1")
+{
+  # continuous variables
+  contPvals<-c()
+  contDirection<-c()
+  contSSize<-c()
+  for (i in 1:length(contVar))
+  {
+    curVar<-contVar[i]
+    contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+    curLme<-lme(contForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+    curSum<-summary(curLme)
+    contPvals<-c(contPvals, curSum$tTable[2,5])
+    contDirection<-c(contDirection, curSum$tTable[2,1])
+    contSSize<-c(contSSize, nrow(bloodDesign)-sum(is.na(bloodDesign[,which(colnames(bloodDesign)==curVar)])))
+  }
+  
+  # now look at categorical variables
+  catPvals<-c()
+  catSSize<-c()
+  for (i in 1:length(catVar))
+  {
+    curVar<-catVar[i]
+    catForm<-paste(curPC," ~ ", curVar, sep="")
+    curLme<-lme(eval(as.formula(catForm)), data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+    curAnova<-anova(curLme)
+    catPvals<-c(catPvals, curAnova[2,4])
+    catSSize<-c(catSSize, nrow(bloodDesign)-sum(is.na(bloodDesign[,which(colnames(bloodDesign)==curVar)])))
+  }
+  
+  contPCdata<-as.data.frame(cbind(contVar, contPvals, p.adjust(contPvals, method="fdr"), contDirection, contSSize))
+  catPCdata<-as.data.frame(cbind(catVar, catPvals, p.adjust(catPvals, method="fdr"), rep(NA, length(catVar)), catSSize))
+  colnames(contPCdata)<-c("variable","pvalue","FDR","estimate","size")
+  colnames(catPCdata)<-c("variable","pvalue","FDR","estimate","size")
+
+  contPCdata$pvalue<-as.numeric(as.character(contPCdata$pvalue))
+  contPCdata$FDR<-as.numeric(as.character(contPCdata$FDR))
+  contPCdata$estimate<-as.numeric(as.character(contPCdata$estimate))
+  contPCdata$size<-as.numeric(as.character(contPCdata$size))
+  
+  catPCdata$pvalue<-as.numeric(as.character(catPCdata$pvalue))
+  catPCdata$FDR<-as.numeric(as.character(catPCdata$FDR))
+  catPCdata$estimate<-as.numeric(as.character(catPCdata$estimate))
+  catPCdata$size<-as.numeric(as.character(catPCdata$size))
+  
+  allPCdata<-rbind(contPCdata, catPCdata)
+  return(allPCdata)
+}
+library(knitr)
+
+PC1data<-PCcor(bloodDesign, contVar, catVar, curPC="PC1")
+sum(PC1data$FDR < 0.05) # 9
+kable(PC1data[which(PC1data$FDR < 0.05),]) 
+
+PC2data<-PCcor(bloodDesign, contVar, catVar, curPC="PC2")
+sum(PC2data$FDR < 0.05) # 2
+kable(PC2data[which(PC2data$FDR < 0.05),]) 
+
+PC3data<-PCcor(bloodDesign, contVar, catVar, curPC="PC3")
+sum(PC3data$FDR < 0.05) # 7
+kable(PC3data[which(PC3data$FDR < 0.05),]) 
+
+PC4data<-PCcor(bloodDesign, contVar, catVar, curPC="PC4")
+sum(PC4data$FDR < 0.05) # 3
+kable(PC4data[which(PC4data$FDR < 0.05),]) 
+
+PC5data<-PCcor(bloodDesign, contVar, catVar, curPC="PC5")
+sum(PC5data$FDR < 0.05) # 6
+kable(PC5data[which(PC5data$FDR < 0.05),]) 
+
+PC6data<-PCcor(bloodDesign, contVar, catVar, curPC="PC6")
+sum(PC6data$FDR < 0.05) # 8
+kable(PC6data[which(PC6data$FDR < 0.05),]) 
+
+PC7data<-PCcor(bloodDesign, contVar, catVar, curPC="PC7")
+sum(PC7data$FDR < 0.05) # 9
+kable(PC7data[which(PC7data$FDR < 0.05),]) 
+
+```
+
+## Combine These Values into one table
+
+```{r combinePCARes}
+
+# make the variable the row name
+# then add cor estimate, pvalue and FDR
+# put size at the end of all PCs
+# for now just keep PC1 to PC5 (above 5% variance)
+
+# to do: add rownames, change column names, add size
+PCvisitres<-cbind(PC1data[,c(4,2,3)], PC2data[,c(4,2,3)], PC3data[,c(4,2,3)], PC4data[,c(4,2,3)], PC5data[,c(4,2,3)], PC1data[,5])
+rownames(PCvisitres)<-as.character(PC1data$variable)
+colnames(PCvisitres)<-c("PC1_est","PC1_pval","PC1_FDR", "PC2_est","PC2_pval","PC2_FDR", "PC3_est","PC3_pval","PC3_FDR", "PC4_est","PC4_pval","PC4_FDR", "PC5_est","PC5_pval","PC5_FDR","samSize")
+
+# make a plot of this table?
+# split into continuous and categorical
+contIndex<-which(!is.na(PCvisitres[,1]))
+catIndex<-which(is.na(PCvisitres[,1]))
+
+
+# get the R-squared values for PC1 to PC5
+curPC<-"PC1"
+contRsq1<-c()
+for (i in 1:length(contVar))
+{
+  curVar<-contVar[i]
+  contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(contForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  contRsq1<-c(contRsq1, r2beta(curLme)$Rsq[1])
+}
+catRsq1<-c()
+for (i in 1:length(catVar))
+{
+  curVar<-catVar[i]
+  catForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(catForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  catRsq1<-c(catRsq1, r2beta(curLme)$Rsq[1])
+}
+
+curPC<-"PC2"
+contRsq2<-c()
+for (i in 1:length(contVar))
+{
+  curVar<-contVar[i]
+  contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(contForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  contRsq2<-c(contRsq2, r2beta(curLme)$Rsq[1])
+}
+catRsq2<-c()
+for (i in 1:length(catVar))
+{
+  curVar<-catVar[i]
+  catForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(catForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  catRsq2<-c(catRsq2, r2beta(curLme)$Rsq[1])
+}
+
+curPC<-"PC3"
+contRsq3<-c()
+for (i in 1:length(contVar))
+{
+  curVar<-contVar[i]
+  contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(contForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  contRsq3<-c(contRsq3, r2beta(curLme)$Rsq[1])
+}
+catRsq3<-c()
+for (i in 1:length(catVar))
+{
+  curVar<-catVar[i]
+  catForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(catForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  catRsq3<-c(catRsq3, r2beta(curLme)$Rsq[1])
+}
+
+curPC<-"PC4"
+contRsq4<-c()
+for (i in 1:length(contVar))
+{
+  curVar<-contVar[i]
+  contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(contForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  contRsq4<-c(contRsq4, r2beta(curLme)$Rsq[1])
+}
+catRsq4<-c()
+for (i in 1:length(catVar))
+{
+  curVar<-catVar[i]
+  catForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(catForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  catRsq4<-c(catRsq4, r2beta(curLme)$Rsq[1])
+}
+
+curPC<-"PC5"
+contRsq5<-c()
+for (i in 1:length(contVar))
+{
+  curVar<-contVar[i]
+  contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(contForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  contRsq5<-c(contRsq5, r2beta(curLme)$Rsq[1])
+}
+catRsq5<-c()
+for (i in 1:length(catVar))
+{
+  curVar<-catVar[i]
+  catForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(catForm, data=bloodDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  catRsq5<-c(catRsq5, r2beta(curLme)$Rsq[1])
+}
+Rsq1<-c(contRsq1, catRsq1)
+Rsq2<-c(contRsq2, catRsq2)
+Rsq3<-c(contRsq3, catRsq3)
+Rsq4<-c(contRsq4, catRsq4)
+Rsq5<-c(contRsq5, catRsq5)
+
+Rsq<-sqrt(cbind(Rsq1, Rsq2, Rsq3, Rsq4, Rsq5))
+range(Rsq)
+
+
+library(corrplot)
+col1 <- colorRampPalette(c("blue","white","red"))
+contEst<-PCvisitres[contIndex,c(1,4,7,10,13)]
+# need to use contCor to set the correlation in the right direction
+for (i in 1:5)
+{
+  negIndex<-which(contEst[,i] < 0)
+  Rsq[negIndex,i]<- -Rsq[negIndex,i]
+}
+allFDR<-PCvisitres[,c(3,6,9,12,15)]
+colnames(Rsq)<-c("PC1","PC2","PC3","PC4","PC5")
+rownames(Rsq)<-c(contVar, catVar)
+# change a couple of row names
+rownames(Rsq)[16]<-"Virus.Status"
+rownames(Rsq)[19]<-"Case.or.Control.Status"
+
+png(file=file.path(resultsDir, "blood_allVisits_corrplot_Vars_with_PCs.png"), res=600, pointsize=8, units="in", width=8, height=3)
+corrplot(t(Rsq), p.mat=t(as.matrix(allFDR)), insig="p-value", col=col1(100))
+abline(v=11.5)
+dev.off()
+
+
+# need to add color of gray to only those that are unsig
+# split into 2 plots: continuous and categorical
+png(file=file.path(resultsDir, "blood_allVisits_corrplot_Vars_with_PCs_continuous.png"), res=600, pointsize=8, units="in", width=4, height=3)
+pMat<-as.matrix(allFDR)
+pMatCo<-t(pMat)[,1:11]
+RsqCo<-t(Rsq)[,1:11]
+corrplot(RsqCo, p.mat=pMatCo, insig="blank", col=col1(100))
+# now call text to put on insig FDR
+pos <- expand.grid(1:nrow(t(RsqCo)), ncol(t(RsqCo)):1)
+textVals<-c(t(pMatCo))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+# can we add another plot on top of this one to get gray color for categorical variables?
+png(file=file.path(resultsDir, "blood_allVisits_corrplot_Vars_with_PCs_categorical.png"), res=600, pointsize=8, units="in", width=4, height=3)
+pMatCa<-t(pMat)[,12:22]
+RsqCa<-t(Rsq)[,12:22]
+col2 <- colorRampPalette(c("yellow","white","black"))
+corrplot(RsqCa, p.mat=pMatCa, insig="blank", col=col2(100), cl.lim=c(0,1))
+
+pos <- expand.grid(1:nrow(t(RsqCa)), ncol(t(RsqCa)):1)
+textVals<-c(t(pMatCa))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+
+# 5/18/18 new version
+png(file=file.path(resultsDir, "blood_allVisits_corrplot_Vars_with_PCs_continuous_v2.png"), res=600, pointsize=8, units="in", width=4, height=3.1)
+pMat<-as.matrix(allFDR)
+pMatCo<-t(pMat)[,1:11]
+RsqCo<-t(Rsq)[,1:11]
+colnames(pMatCo)<-c("Age in years", "BMI Percentile at Visit", "Days between V0 and Cold", "FeNO at Visit", "Blood Neutrophil Differential", "Blood Lymphocyte Differential", "Blood Eosinophil Differential", "Blood Monocyte Differential", "Blood Basophil Differential", "Blood Platelet Count", "Blood Erythrocytes Count")
+colnames(RsqCo)<-c("Age in years", "BMI Percentile at Visit", "Days between V0 and Cold", "FeNO at Visit", "Blood Neutrophil Differential", "Blood Lymphocyte Differential", "Blood Eosinophil Differential", "Blood Monocyte Differential", "Blood Basophil Differential", "Blood Platelet Count", "Blood Erythrocytes Count")
+corrplot(RsqCo, p.mat=pMatCo, insig="blank", col=col1(100))
+# now call text to put on insig FDR
+pos <- expand.grid(1:nrow(t(RsqCo)), ncol(t(RsqCo)):1)
+textVals<-c(t(pMatCo))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+png(file=file.path(resultsDir, "blood_allVisits_corrplot_Vars_with_PCs_categorical_v2.png"), res=600, pointsize=8, units="in", width=4, height=3.1)
+pMatCa<-t(pMat)[,12:22]
+RsqCa<-t(Rsq)[,12:22]
+colnames(pMatCa)<-c("Study Site", "Sex", "Ethnicity", "Season of visit", "Virus Status", "Nasal Steroid Use at Visit", "NicAlert at Visit", "Case.or.Control.Status.Original", "Virus Category", "CSteroid Start Relative to Visit", "Visit")
+colnames(RsqCa)<-c("Study Site", "Sex", "Ethnicity", "Season of visit", "Virus Status", "Nasal Steroid Use at Visit", "NicAlert at Visit", "Case.or.Control.Status.Original", "Virus Category", "CSteroid Start Relative to Visit", "Visit")
+RsqCa<-RsqCa[,-8]
+pMatCa<-pMatCa[,-8]
+# now reorder the columns
+RsqCa<-RsqCa[,c(1:4,6:7,5,8,9:10)]
+pMatCa<-pMatCa[,c(1:4,6:7,5,8,9:10)]
+col2 <- colorRampPalette(c("yellow","white","black"))
+corrplot(RsqCa, p.mat=pMatCa, insig="blank", col=col2(100), cl.lim=c(0,1))
+pos <- expand.grid(1:nrow(t(RsqCa)), ncol(t(RsqCa)):1)
+textVals<-c(t(pMatCa))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+
+# 1/14/19 make svg files for paper
+svg(file=file.path(resultsDir, "blood_allVisits_corrplot_Vars_with_PCs_continuous_v2.svg"), pointsize=8, width=4, height=3.1)
+pMat<-as.matrix(allFDR)
+pMatCo<-t(pMat)[,1:11]
+RsqCo<-t(Rsq)[,1:11]
+colnames(pMatCo)<-c("Age in years", "BMI Percentile at Visit", "Days between V0 and Cold", "FeNO at Visit", "Blood Neutrophil Differential", "Blood Lymphocyte Differential", "Blood Eosinophil Differential", "Blood Monocyte Differential", "Blood Basophil Differential", "Blood Platelet Count", "Blood Erythrocytes Count")
+colnames(RsqCo)<-c("Age in years", "BMI Percentile at Visit", "Days between V0 and Cold", "FeNO at Visit", "Blood Neutrophil Differential", "Blood Lymphocyte Differential", "Blood Eosinophil Differential", "Blood Monocyte Differential", "Blood Basophil Differential", "Blood Platelet Count", "Blood Erythrocytes Count")
+corrplot(RsqCo, p.mat=pMatCo, insig="blank", col=col1(100))
+# now call text to put on insig FDR
+pos <- expand.grid(1:nrow(t(RsqCo)), ncol(t(RsqCo)):1)
+textVals<-c(t(pMatCo))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+svg(file=file.path(resultsDir, "blood_allVisits_corrplot_Vars_with_PCs_categorical_v2.svg"), pointsize=8, width=4, height=3.1)
+pMatCa<-t(pMat)[,12:22]
+RsqCa<-t(Rsq)[,12:22]
+colnames(pMatCa)<-c("Study Site", "Sex", "Ethnicity", "Season of visit", "Virus Status", "Nasal Steroid Use at Visit", "NicAlert at Visit", "Case.or.Control.Status.Original", "Virus Category", "CSteroid Start Relative to Visit", "Visit")
+colnames(RsqCa)<-c("Study Site", "Sex", "Ethnicity", "Season of visit", "Virus Status", "Nasal Steroid Use at Visit", "NicAlert at Visit", "Case.or.Control.Status.Original", "Virus Category", "CSteroid Start Relative to Visit", "Visit")
+RsqCa<-RsqCa[,-8]
+pMatCa<-pMatCa[,-8]
+# now reorder the columns
+RsqCa<-RsqCa[,c(1:4,6:7,5,8,9:10)]
+pMatCa<-pMatCa[,c(1:4,6:7,5,8,9:10)]
+col2 <- colorRampPalette(c("yellow","white","black"))
+corrplot(RsqCa, p.mat=pMatCa, insig="blank", col=col2(100), cl.lim=c(0,1))
+pos <- expand.grid(1:nrow(t(RsqCa)), ncol(t(RsqCa)):1)
+textVals<-c(t(pMatCa))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+```

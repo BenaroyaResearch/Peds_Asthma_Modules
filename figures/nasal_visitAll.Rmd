@@ -1,0 +1,465 @@
+---
+title: "All Visits Study of PC Correlation"
+author: "Elizabeth Whalen"
+date: "8/30/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in Data
+
+```{r readData}
+
+dataDir <- "../data"
+resultsDir <- "../results"
+
+#load(file=file.path(dataDir, "nasalVoom_374samples.RData"))
+#nasalDesign<-read.csv(file=file.path(dataDir, "nasalDesign_374samples.csv"))
+nasalDesign<-read.csv(file=file.path(dataDir, "totalNasalDesign_update.csv"))
+nasalGS<-read.csv(file=file.path(dataDir, "nasalGeneSets_374samples.csv"), row.names=1)
+
+# need to subset nasalDesign
+nasalDesign<-nasalDesign[which(nasalDesign$library.sampleId %in% colnames(nasalGS)),]
+#all(colnames(nasalVoom)==nasalDesign$library.sampleId)
+all(colnames(nasalGS)==nasalDesign$library.sampleId)
+
+```
+
+## PCA on Gene Set 
+
+```{r pcaGS}
+
+nasalPCA<-prcomp(t(nasalGS), center=TRUE, scale=TRUE)
+
+bpData<-(nasalPCA$sdev^2/(sum(nasalPCA$sdev^2)))[1:10]
+names(bpData)<-paste("PC", 1:10, sep="")
+barplot(bpData, ylab="Variance Explained (%)", las=2, main="Nasal All Visits")
+
+# do we have case/control status for all visits? no, need to add visit 0
+table(nasalDesign$Case.or.Control.Status.Original)
+
+# do we have case/control status for visit 0? yes
+table(nasalDesign$V0.case.control.basedonVaEventsOnly)
+table(nasalDesign$V0.case.control.status.based.on.most.proximal.event)
+nasalDesign$V0.case.control.status.based.on.most.proximal.event<-as.character(nasalDesign$V0.case.control.status.based.on.most.proximal.event)
+nasalDesign$V0.case.control.status.based.on.most.proximal.event[which(nasalDesign$V0.case.control.status.based.on.most.proximal.event=="")]<-as.character(nasalDesign$Case.or.Control.Status.Original[which(nasalDesign$V0.case.control.status.based.on.most.proximal.event=="")])
+table(nasalDesign$V0.case.control.status.based.on.most.proximal.event)
+
+# does this match what I would get if I used any A with case is a case?
+nasalDesign$CaseControlV0BasedOnVa<-as.character(nasalDesign$Case.or.Control.Status.Original)
+indivs<-as.character(nasalDesign$Subject.Identifier.for.the.Study)
+for (i in 1:length(indivs))
+{
+  curID<-indivs[i]
+  curIndex<-which(nasalDesign$Subject.Identifier.for.the.Study==curID)
+  curIndex0<-which(nasalDesign$Subject.Identifier.for.the.Study==curID & nasalDesign$Visit=="Visit 0")
+  if ("Case" %in% nasalDesign$Case.or.Control.Status.Original[curIndex])
+  {
+    if (length(curIndex0)==1)
+      nasalDesign$CaseControlV0BasedOnVa[curIndex0]<-"Case"
+  }
+  else
+  {
+    if (length(curIndex0)==1)
+      nasalDesign$CaseControlV0BasedOnVa[curIndex0]<-"Control"
+  }
+}
+table(nasalDesign$CaseControlV0BasedOnVa)
+
+```
+
+## Set up variables
+
+```{r importVar}
+
+library(nlme)
+
+contVar<-c("Age.in.years","BMI.Percentile.at.Visit","Days.between.Day.0.and.Cold","FeNO.at.Visit","Nasal.Neutrophil.Count","Nasal.Lymphocyte.Count","Nasal.Eosinophil.Count","Nasal.Macrophage.Count","Nasal.WBC.Count","Nasal.Epithelial.Count","Nasal.Squamous.Count")
+
+catVar<-c("Study.Site","Sex","Ethnicity","Enrollment.phase","Season.of.visit","Viral.Type.at.Visit2","Nasal.Steroid.Use.at.Visit","NicAlert.at.Visit","Case.or.Control.Status.Original","Virus.Category","CSteroid.Start.Relative.to.Visit","Visit")
+# note: using CaseControlV0BasedOnVa (which has case/control status for visit 0) instead of Case.or.Control.Status.Original (which has case/control status missing for visit 0) did not make any PC correlations significant
+#catVar<-c("Study.Site","Sex","Ethnicity","Enrollment.phase","Season.of.visit","Viral.Type.at.Visit2","Nasal.Steroid.Use.at.Visit","NicAlert.at.Visit","CaseControlV0BasedOnVa","Virus.Category","CSteroid.Start.Relative.to.Visit","Visit")
+contVar[which(!(contVar %in% colnames(nasalDesign)))]
+catVar[which(!(catVar %in% colnames(nasalDesign)))]
+
+for (i in 1:length(contVar))
+{
+  curCol<-which(colnames(nasalDesign)==contVar[i])
+  nasalDesign[,curCol]<-as.numeric(as.character(nasalDesign[,curCol]))
+}
+
+# now look at cat vars
+nasalDesign$Enrollment.phase<-as.factor(as.character(nasalDesign$Enrollment.phase))
+nasalDesign$Season.of.Cold<-factor(as.character(nasalDesign$Season.of.Cold), levels=c("Autumn (Sep.-Nov.)","Spring (Mar.-May)","Summer (Jun.-Aug.)","Winter (Dec.-Feb.)"))
+nasalDesign$CSteroid.Start.Relative.to.Visit<-factor(as.character(nasalDesign$CSteroid.Start.Relative.to.Visit), levels=c("After","Before"))
+nasalDesign$Viral.Type.at.Visit2<-factor(as.character(nasalDesign$Viral.Type.at.Visit2), levels=c("Non-viral","Viral"))
+
+nasalDesign$NicAlert.at.Visit<-as.character(nasalDesign$NicAlert.at.Visit)
+nasalDesign$NicAlert.at.Visit[which(nasalDesign$NicAlert.at.Visit=="0")]<-NA
+nasalDesign$NicAlert.at.Visit<-as.factor(nasalDesign$NicAlert.at.Visit)
+
+nasalDesign$Case.or.Control.Status.Original<-factor(as.character(nasalDesign$Case.or.Control.Status.Original), levels=c("Control","Case"))
+nasalDesign$CaseControlV0BasedOnVa<-factor(as.character(nasalDesign$CaseControlV0BasedOnVa), levels=c("Control","Case"))
+
+nasalDesign$Virus.Category<-factor(as.character(nasalDesign$Virus.Category),levels=c("Non-viral","Boca","CoV","Other virus","PIV","RSV","RV-A/C","RV-B"))
+
+nasalDesign$Visit<-factor(as.character(nasalDesign$Visit), levels=c("Visit 0","Visit a","Visit b"))
+
+```
+
+## Relationship of PCs to Variables
+
+For all visits, I used linear mixed effects models since most (all?) individuals had multiple visits.
+
+```{r corPCA}
+
+nasalDesign$PC1<-nasalPCA$x[,1]
+nasalDesign$PC2<-nasalPCA$x[,2]
+nasalDesign$PC3<-nasalPCA$x[,3]
+nasalDesign$PC4<-nasalPCA$x[,4]
+nasalDesign$PC5<-nasalPCA$x[,5]
+nasalDesign$PC6<-nasalPCA$x[,6]
+nasalDesign$PC7<-nasalPCA$x[,7]
+
+library(nlme)
+library(r2glmm)
+
+# make a function to run for each PC
+PCcor<-function(nasalDesign, contVar, catVar, curPC="PC1")
+{
+  # continuous variables
+  contPvals<-c()
+  contDirection<-c()
+  contSSize<-c()
+  for (i in 1:length(contVar))
+  {
+    curVar<-contVar[i]
+    contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+    curLme<-lme(contForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+    curSum<-summary(curLme)
+    contPvals<-c(contPvals, curSum$tTable[2,5])
+    contDirection<-c(contDirection, curSum$tTable[2,1])
+    contSSize<-c(contSSize, nrow(nasalDesign)-sum(is.na(nasalDesign[,which(colnames(nasalDesign)==curVar)])))
+  }
+  
+  # now look at categorical variables
+  catPvals<-c()
+  catSSize<-c()
+  for (i in 1:length(catVar))
+  {
+    curVar<-catVar[i]
+    catForm<-paste(curPC," ~ ", curVar, sep="")
+    curLme<-lme(eval(as.formula(catForm)), data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+    curAnova<-anova(curLme)
+    catPvals<-c(catPvals, curAnova[2,4])
+    catSSize<-c(catSSize, nrow(nasalDesign)-sum(is.na(nasalDesign[,which(colnames(nasalDesign)==curVar)])))
+  }
+  
+  contPCdata<-as.data.frame(cbind(contVar, contPvals, p.adjust(contPvals, method="fdr"), contDirection, contSSize))
+  catPCdata<-as.data.frame(cbind(catVar, catPvals, p.adjust(catPvals, method="fdr"), rep(NA, length(catVar)), catSSize))
+  colnames(contPCdata)<-c("variable","pvalue","FDR","estimate","size")
+  colnames(catPCdata)<-c("variable","pvalue","FDR","estimate","size")
+
+  contPCdata$pvalue<-as.numeric(as.character(contPCdata$pvalue))
+  contPCdata$FDR<-as.numeric(as.character(contPCdata$FDR))
+  contPCdata$estimate<-as.numeric(as.character(contPCdata$estimate))
+  contPCdata$size<-as.numeric(as.character(contPCdata$size))
+  
+  catPCdata$pvalue<-as.numeric(as.character(catPCdata$pvalue))
+  catPCdata$FDR<-as.numeric(as.character(catPCdata$FDR))
+  catPCdata$estimate<-as.numeric(as.character(catPCdata$estimate))
+  catPCdata$size<-as.numeric(as.character(catPCdata$size))
+  
+  allPCdata<-rbind(contPCdata, catPCdata)
+  return(allPCdata)
+}
+library(knitr)
+
+PC1data<-PCcor(nasalDesign, contVar, catVar, curPC="PC1")
+sum(PC1data$FDR < 0.05) # 11
+kable(PC1data[which(PC1data$FDR < 0.05),]) 
+
+PC2data<-PCcor(nasalDesign, contVar, catVar, curPC="PC2")
+sum(PC2data$FDR < 0.05) # 12
+kable(PC2data[which(PC2data$FDR < 0.05),]) 
+
+PC3data<-PCcor(nasalDesign, contVar, catVar, curPC="PC3")
+sum(PC3data$FDR < 0.05) # 4
+kable(PC3data[which(PC3data$FDR < 0.05),]) 
+
+PC4data<-PCcor(nasalDesign, contVar, catVar, curPC="PC4")
+sum(PC4data$FDR < 0.05) # 8
+kable(PC4data[which(PC4data$FDR < 0.05),]) 
+
+PC5data<-PCcor(nasalDesign, contVar, catVar, curPC="PC5")
+sum(PC5data$FDR < 0.05) # 7
+kable(PC5data[which(PC5data$FDR < 0.05),]) 
+
+PC6data<-PCcor(nasalDesign, contVar, catVar, curPC="PC6")
+sum(PC6data$FDR < 0.05) # 3
+kable(PC6data[which(PC6data$FDR < 0.05),]) 
+
+PC7data<-PCcor(nasalDesign, contVar, catVar, curPC="PC7")
+sum(PC7data$FDR < 0.05) # 5
+kable(PC7data[which(PC7data$FDR < 0.05),]) 
+
+```
+
+
+
+## Combine These Values into one table
+
+```{r combinePCARes}
+
+# make the variable the row name
+# then add cor estimate, pvalue and FDR
+# put size at the end of all PCs
+# for now just keep PC1 to PC5 (above 5% variance)
+
+# to do: add rownames, change column names, add size
+PCvisitres<-cbind(PC1data[,c(4,2,3)], PC2data[,c(4,2,3)], PC3data[,c(4,2,3)], PC4data[,c(4,2,3)], PC5data[,c(4,2,3)], PC1data[,5])
+rownames(PCvisitres)<-as.character(PC1data$variable)
+colnames(PCvisitres)<-c("PC1_est","PC1_pval","PC1_FDR", "PC2_est","PC2_pval","PC2_FDR", "PC3_est","PC3_pval","PC3_FDR", "PC4_est","PC4_pval","PC4_FDR", "PC5_est","PC5_pval","PC5_FDR","samSize")
+
+# make a plot of this table?
+# split into continuous and categorical
+contIndex<-which(!is.na(PCvisitres[,1]))
+catIndex<-which(is.na(PCvisitres[,1]))
+
+
+# get the R-squared values for PC1 to PC5
+curPC<-"PC1"
+contRsq1<-c()
+for (i in 1:length(contVar))
+{
+  curVar<-contVar[i]
+  contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(contForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  contRsq1<-c(contRsq1, r2beta(curLme)$Rsq[1])
+}
+catRsq1<-c()
+for (i in 1:length(catVar))
+{
+  curVar<-catVar[i]
+  catForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(catForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  catRsq1<-c(catRsq1, r2beta(curLme)$Rsq[1])
+}
+
+curPC<-"PC2"
+contRsq2<-c()
+for (i in 1:length(contVar))
+{
+  curVar<-contVar[i]
+  contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(contForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  contRsq2<-c(contRsq2, r2beta(curLme)$Rsq[1])
+}
+catRsq2<-c()
+for (i in 1:length(catVar))
+{
+  curVar<-catVar[i]
+  catForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(catForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  catRsq2<-c(catRsq2, r2beta(curLme)$Rsq[1])
+}
+
+curPC<-"PC3"
+contRsq3<-c()
+for (i in 1:length(contVar))
+{
+  curVar<-contVar[i]
+  contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(contForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  contRsq3<-c(contRsq3, r2beta(curLme)$Rsq[1])
+}
+catRsq3<-c()
+for (i in 1:length(catVar))
+{
+  curVar<-catVar[i]
+  catForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(catForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  catRsq3<-c(catRsq3, r2beta(curLme)$Rsq[1])
+}
+
+curPC<-"PC4"
+contRsq4<-c()
+for (i in 1:length(contVar))
+{
+  curVar<-contVar[i]
+  contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(contForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  contRsq4<-c(contRsq4, r2beta(curLme)$Rsq[1])
+}
+catRsq4<-c()
+for (i in 1:length(catVar))
+{
+  curVar<-catVar[i]
+  catForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(catForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  catRsq4<-c(catRsq4, r2beta(curLme)$Rsq[1])
+}
+
+curPC<-"PC5"
+contRsq5<-c()
+for (i in 1:length(contVar))
+{
+  curVar<-contVar[i]
+  contForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(contForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  contRsq5<-c(contRsq5, r2beta(curLme)$Rsq[1])
+}
+catRsq5<-c()
+for (i in 1:length(catVar))
+{
+  curVar<-catVar[i]
+  catForm<-eval(as.formula(paste(curPC," ~ ", curVar, sep="")))
+  curLme<-lme(catForm, data=nasalDesign, random=~1|Subject.Identifier.for.the.Study, na.action=na.omit)
+  catRsq5<-c(catRsq5, r2beta(curLme)$Rsq[1])
+}
+Rsq1<-c(contRsq1, catRsq1)
+Rsq2<-c(contRsq2, catRsq2)
+Rsq3<-c(contRsq3, catRsq3)
+Rsq4<-c(contRsq4, catRsq4)
+Rsq5<-c(contRsq5, catRsq5)
+
+Rsq<-sqrt(cbind(Rsq1, Rsq2, Rsq3, Rsq4, Rsq5))
+range(Rsq)
+
+
+library(corrplot)
+col1 <- colorRampPalette(c("blue","white","red"))
+contEst<-PCvisitres[contIndex,c(1,4,7,10,13)]
+# need to use contCor to set the correlation in the right direction
+for (i in 1:5)
+{
+  negIndex<-which(contEst[,i] < 0)
+  Rsq[negIndex,i]<- -Rsq[negIndex,i]
+}
+allFDR<-PCvisitres[,c(3,6,9,12,15)]
+colnames(Rsq)<-c("PC1","PC2","PC3","PC4","PC5")
+rownames(Rsq)<-c(contVar, catVar)
+# change a couple of row names
+rownames(Rsq)[17]<-"Virus.Status"
+rownames(Rsq)[20]<-"Case.or.Control.Status"
+
+png(file=file.path(resultsDir, "nasal_allVisits_corrplot_Vars_with_PCs.png"), res=600, pointsize=8, units="in", width=8, height=3)
+corrplot(t(Rsq), p.mat=t(as.matrix(allFDR)), insig="p-value", col=col1(100))
+abline(v=11.5)
+dev.off()
+
+# need to add color of gray to only those that are unsig
+# split into 2 plots: continuous and categorical
+png(file=file.path(resultsDir, "nasal_allVisits_corrplot_Vars_with_PCs_continuous.png"), res=600, pointsize=8, units="in", width=8*11/23, height=3)
+pMat<-as.matrix(allFDR)
+pMatCo<-t(pMat)[,1:11]
+RsqCo<-t(Rsq)[,1:11]
+corrplot(RsqCo, p.mat=pMatCo, insig="blank", col=col1(100))
+# now call text to put on insig FDR
+pos <- expand.grid(1:nrow(t(RsqCo)), ncol(t(RsqCo)):1)
+textVals<-c(t(pMatCo))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+# can we add another plot on top of this one to get gray color for categorical variables?
+png(file=file.path(resultsDir, "nasal_allVisits_corrplot_Vars_with_PCs_categorical.png"), res=600, pointsize=8, units="in", width=8*12/23, height=3)
+pMatCa<-t(pMat)[,c(12:23)]
+RsqCa<-t(Rsq)[,c(12:23)]
+col2 <- colorRampPalette(c("yellow","white","black"))
+corrplot(RsqCa, p.mat=pMatCa, insig="blank", col=col2(100), cl.lim=c(0,1))
+
+pos <- expand.grid(1:nrow(t(RsqCa)), ncol(t(RsqCa)):1)
+textVals<-c(t(pMatCa))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+
+# 5/18/18 new version
+png(file=file.path(resultsDir, "nasal_allVisits_corrplot_Vars_with_PCs_continuous_v2.png"), res=600, pointsize=8, units="in", width=8*11/23, height=3.1)
+pMat<-as.matrix(allFDR)
+pMatCo<-t(pMat)[,1:11]
+RsqCo<-t(Rsq)[,1:11]
+colnames(RsqCo)<-c("Age in years", "BMI Percentile at Visit", "Days between V0 and Cold", "FeNO at Visit", "Nasal Neutrophil Percentage", "Nasal Lymphocyte Percentage", "Nasal Eosinophil Percentage", "Nasal Macrophage Percentage", "Nasal WBC Percentage", "Nasal Epithelial Percentage", "Nasal Squamous Percentage")
+colnames(pMatCo)<-c("Age in years", "BMI Percentile at Visit", "Days between V0 and Cold", "FeNO at Visit", "Nasal Neutrophil Percentage", "Nasal Lymphocyte Percentage", "Nasal Eosinophil Percentage", "Nasal Macrophage Percentage", "Nasal WBC Percentage", "Nasal Epithelial Percentage", "Nasal Squamous Percentage")
+corrplot(RsqCo, p.mat=pMatCo, insig="blank", col=col1(100))
+# now call text to put on insig FDR
+pos <- expand.grid(1:nrow(t(RsqCo)), ncol(t(RsqCo)):1)
+textVals<-c(t(pMatCo))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+png(file=file.path(resultsDir, "nasal_allVisits_corrplot_Vars_with_PCs_categorical_v2.png"), res=600, pointsize=8, units="in", width=8*12/23, height=3.1)
+pMatCa<-t(pMat)[,c(12:14,16:23)]
+RsqCa<-t(Rsq)[,c(12:14,16:23)]
+colnames(RsqCa)<-c("Study Site", "Sex", "Ethnicity", "Season of visit", "Virus Status", "Nasal Steroid Use at Visit", "NicAlert at Visit", "Case.or.Control.Status.Original", "Virus Category", "CSteroid Start Relative to Visit", "Visit")
+colnames(pMatCa)<-c("Study Site", "Sex", "Ethnicity", "Season of visit", "Virus Status", "Nasal Steroid Use at Visit", "NicAlert at Visit", "Case.or.Control.Status.Original", "Virus Category", "CSteroid Start Relative to Visit", "Visit")
+# remove case/control status
+RsqCa<-RsqCa[,-8]
+pMatCa<-pMatCa[,-8]
+# now reorder the columns
+RsqCa<-RsqCa[,c(1:4,6:7,5,8:10)]
+pMatCa<-pMatCa[,c(1:4,6:7,5,8:10)]
+col2 <- colorRampPalette(c("yellow","white","black"))
+corrplot(RsqCa, p.mat=pMatCa, insig="blank", col=col2(100), cl.lim=c(0,1))
+
+pos <- expand.grid(1:nrow(t(RsqCa)), ncol(t(RsqCa)):1)
+textVals<-c(t(pMatCa))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+# 1/14/19 now make as svg for paper
+svg(file=file.path(resultsDir, "nasal_allVisits_corrplot_Vars_with_PCs_continuous_v2.svg"), pointsize=8, width=8*11/23, height=3.1)
+pMat<-as.matrix(allFDR)
+pMatCo<-t(pMat)[,1:11]
+RsqCo<-t(Rsq)[,1:11]
+colnames(RsqCo)<-c("Age in years", "BMI Percentile at Visit", "Days between V0 and Cold", "FeNO at Visit", "Nasal Neutrophil Percentage", "Nasal Lymphocyte Percentage", "Nasal Eosinophil Percentage", "Nasal Macrophage Percentage", "Nasal WBC Percentage", "Nasal Epithelial Percentage", "Nasal Squamous Percentage")
+colnames(pMatCo)<-c("Age in years", "BMI Percentile at Visit", "Days between V0 and Cold", "FeNO at Visit", "Nasal Neutrophil Percentage", "Nasal Lymphocyte Percentage", "Nasal Eosinophil Percentage", "Nasal Macrophage Percentage", "Nasal WBC Percentage", "Nasal Epithelial Percentage", "Nasal Squamous Percentage")
+corrplot(RsqCo, p.mat=pMatCo, insig="blank", col=col1(100))
+# now call text to put on insig FDR
+pos <- expand.grid(1:nrow(t(RsqCo)), ncol(t(RsqCo)):1)
+textVals<-c(t(pMatCo))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+svg(file=file.path(resultsDir, "nasal_allVisits_corrplot_Vars_with_PCs_categorical_v2.svg"), pointsize=8, width=8*12/23, height=3.1)
+pMatCa<-t(pMat)[,c(12:14,16:23)]
+RsqCa<-t(Rsq)[,c(12:14,16:23)]
+colnames(RsqCa)<-c("Study Site", "Sex", "Ethnicity", "Season of visit", "Virus Status", "Nasal Steroid Use at Visit", "NicAlert at Visit", "Case.or.Control.Status.Original", "Virus Category", "CSteroid Start Relative to Visit", "Visit")
+colnames(pMatCa)<-c("Study Site", "Sex", "Ethnicity", "Season of visit", "Virus Status", "Nasal Steroid Use at Visit", "NicAlert at Visit", "Case.or.Control.Status.Original", "Virus Category", "CSteroid Start Relative to Visit", "Visit")
+# remove case/control status
+RsqCa<-RsqCa[,-8]
+pMatCa<-pMatCa[,-8]
+# now reorder the columns
+RsqCa<-RsqCa[,c(1:4,6:7,5,8:10)]
+pMatCa<-pMatCa[,c(1:4,6:7,5,8:10)]
+col2 <- colorRampPalette(c("yellow","white","black"))
+corrplot(RsqCa, p.mat=pMatCa, insig="blank", col=col2(100), cl.lim=c(0,1))
+
+pos <- expand.grid(1:nrow(t(RsqCa)), ncol(t(RsqCa)):1)
+textVals<-c(t(pMatCa))
+textVals[which(textVals < 0.05)]<-NA
+textVals<-round(textVals, 2)
+textVals[which(is.na(textVals))]<-""
+text(pos, textVals, col="gray")
+dev.off()
+
+
+```

@@ -1,0 +1,405 @@
+---
+title: "MUPPITS Nasal Longitudinal Plots Split by Virus Pos/Neg"
+author: "Elizabeth Whalen"
+date: "11/17/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in Data
+
+```{r readData}
+
+dataDir <- "../data"
+resultsDir <- "../results"
+
+load(file=file.path(dataDir, "nasalVoom_374samples.RData"))
+#nasalDesign<-read.csv(file=file.path(dataDir, "nasalDesign_374samples.csv"))
+nasalDesign<-read.csv(file=file.path(dataDir, "totalNasalDesign_update.csv"))
+nasalGS<-read.csv(file=file.path(dataDir, "nasalGeneSets_374samples.csv"), row.names=1)
+assignGS<-read.csv(file=file.path(dataDir, "geneSetsByAssignedCell.csv"))
+
+nasalDesign<-nasalDesign[which(nasalDesign$library.sampleId %in% colnames(nasalVoom)),]
+# make sure everything matches
+all(colnames(nasalVoom)==nasalDesign$library.sampleId)
+all(colnames(nasalVoom)==colnames(nasalGS))
+
+# remove cases that are on steroids - remove any negative values in Days.between.Visit.and.CSteroid.Use
+nasalDesignOrig<-nasalDesign
+nasalVoomOrig<-nasalVoom
+nasalGSorig<-nasalGS
+remIndex<-which(nasalDesign$Days.between.Visit.and.CSteroid.Use < 0)
+nasalDesign<-nasalDesign[-remIndex,]
+nasalVoom<-nasalVoom[,-remIndex]
+all(nasalDesign$library.sampleId==colnames(nasalVoom))
+nasalGS<-nasalGS[,-remIndex]
+all(nasalDesign$library.sampleId==colnames(nasalGS))
+
+```
+
+## Make Gene Set Plots
+
+```{r geneSetPlots}
+
+uniIDs<-unique(as.character(nasalDesign$Subject.Identifier.for.the.Study))
+nasalDesign$Case.or.Control.Status.Original<-as.character(nasalDesign$Case.or.Control.Status.Original)
+for (i in 1:length(uniIDs))
+{
+  curID<-uniIDs[i]
+  curIndex<-which(nasalDesign$Subject.Identifier.for.the.Study==curID)
+  curIndex0<-which(nasalDesign$Subject.Identifier.for.the.Study==curID & nasalDesign$Visit=="Visit 0")
+  if (length(curIndex0)==1)
+  {
+    if ("Case" %in% nasalDesign$Case.or.Control.Status.Original[curIndex])
+      nasalDesign$Case.or.Control.Status.Original[curIndex0]<-"Case"
+    else
+      nasalDesign$Case.or.Control.Status.Original[curIndex0]<-"Control"
+  }
+}
+table(nasalDesign$Case.or.Control.Status.Original)
+
+nasalDesign$Days.between.Cold.and.Visit[which(nasalDesign$Visit=="Visit 0")]<--1
+
+remIndex<-unique(c(which(is.na(nasalDesign$Nasal.Lymphocyte.Count)), which(is.na(nasalDesign$Nasal.Macrophage.Count)), which(is.na(nasalDesign$Nasal.Eosinophil.Count)), which(is.na(nasalDesign$Nasal.Epithelial.Count)), which(is.na(nasalDesign$Nasal.Squamous.Count)), which(is.na(nasalDesign$libCounts)), which(is.na(nasalDesign$Viral.Type.at.Visit2))))
+length(remIndex) # lost 11 out of 347 samples
+dim(nasalDesign)
+
+rbeMM<-model.matrix(~ Nasal.Lymphocyte.Count + Nasal.Eosinophil.Count + Nasal.Macrophage.Count + Nasal.Epithelial.Count +  Nasal.Squamous.Count + libCounts, data=nasalDesign[-remIndex,])
+dim(rbeMM)
+rbeMM[1:3,]
+
+keepmm<-model.matrix(~Visit + Case.or.Control.Status.Original + Viral.Type.at.Visit2, data=nasalDesign[-remIndex,])
+dim(keepmm)
+keepmm[1:3,]
+
+# remove batch effect at module level
+nasalGSrbe<-removeBatchEffect(nasalGS[,-remIndex], covariates=rbeMM[,-1], design=keepmm)
+
+nasalDesignSub<-nasalDesign[-remIndex,]
+all(nasalDesignSub$library.sampleId==colnames(nasalGSrbe))
+
+#######
+# now need to split between virus pos/neg
+#######
+nDesignAB<-nasalDesignSub[which(nasalDesignSub$Visit %in% c("Visit a","Visit b")),]
+
+table(nDesignAB$Viral.Type.at.Visit)
+nDesignABvPos<-nDesignAB[which(nDesignAB$Viral.Type.at.Visit != "Non-viral"),]
+nDesignABvNeg<-nDesignAB[which(nDesignAB$Viral.Type.at.Visit == "Non-viral"),]
+# now need to add back in visit 0
+nDesign0<-nasalDesignSub[which(nasalDesignSub$Visit=="Visit 0"),]
+
+vposIndiv<-unique(as.character(nDesignABvPos$Subject.Identifier.for.the.Study))
+nDesignAllvPos<-rbind(nDesignABvPos, nDesign0[which(nDesign0$Subject.Identifier.for.the.Study %in% vposIndiv),])
+dim(nDesignAllvPos)
+
+
+vnegIndiv<-unique(as.character(nDesignABvNeg$Subject.Identifier.for.the.Study))
+nDesignAllvNeg<-rbind(nDesignABvNeg, nDesign0[which(nDesign0$Subject.Identifier.for.the.Study %in% vnegIndiv),])
+dim(nDesignAllvNeg)
+
+# now need to get the the gene set data
+# now need to get the gene set mean subsets
+nasalGSvPos<-nasalGSrbe[,match(as.character(nDesignAllvPos$library.sampleId), colnames(nasalGSrbe))]
+all(colnames(nasalGSvPos)==nDesignAllvPos$library.sampleId)
+
+nasalGSvNeg<-nasalGSrbe[,match(as.character(nDesignAllvNeg$library.sampleId), colnames(nasalGSrbe))]
+all(colnames(nasalGSvNeg)==nDesignAllvNeg$library.sampleId)
+
+# look at counts
+table(nDesignAllvPos$Case.or.Control.Status.Original, nDesignAllvPos$Days.between.Cold.and.Visit)
+table(nDesignAllvNeg$Case.or.Control.Status.Original, nDesignAllvNeg$Days.between.Cold.and.Visit)
+
+
+
+
+longPlotModPos<-function(modName="eos3", nasalGS, nasalDesign, log=TRUE, points=TRUE, setSpan=1.5)
+{
+  dataToPlot<-as.data.frame(cbind(as.vector(as.matrix(nasalGS[which(rownames(nasalGS)==modName),])), as.character(nasalDesign$Case.or.Control.Status.Original), nasalDesign$Days.between.Cold.and.Visit, nasalDesign$Days.between.Cold.and.Exacerbation, as.character(nasalDesign$Visit), nasalDesign$Days.between.Visit.and.CSteroid.Use))
+  dim(dataToPlot)
+  colnames(dataToPlot)<-c("Exp","Status","Days","DaysBetweenColdExac","Visit","DaysBetweenVisitAndCS")
+  dataToPlot$Exp<-as.numeric(as.character(dataToPlot$Exp))
+  dataToPlot$Days<-as.numeric(as.character(dataToPlot$Days))
+  dataToPlot$Status<-factor(as.character(dataToPlot$Status), levels=c("Control","Case"))
+  dataToPlot$DaysBetweenColdExac<-as.numeric(as.character(dataToPlot$DaysBetweenColdExac))
+  dataToPlot$Visit<-as.character(dataToPlot$Visit)
+  dataToPlot$DaysBetweenVisitAndCS<-as.numeric(as.character(dataToPlot$DaysBetweenVisitAndCS))
+
+  dataToPlot$ExacYet<-"N"
+  dataToPlot$ExacYet[dataToPlot$Days > dataToPlot$DaysBetweenColdExac]<-"Y"
+  table(dataToPlot$Status, dataToPlot$ExacYet)
+  dataToPlot$StatusNew<-as.character(dataToPlot$Status)
+  dataToPlot$StatusNew[which(dataToPlot$Status=="Case" & dataToPlot$ExacYet=="Y")]<-"Case on CSteroid"
+  table(dataToPlot$StatusNew)
+  
+  # bin different days post-cold
+  # combine days 0 and 1 for both
+  # combine days 5, 6, 7, and 12 for controls
+  # combine days 4 and 5 for cases
+  dataToPlot$DaysBin<-as.character(dataToPlot$Days)
+  dataToPlot$DaysBin[which(dataToPlot$Days %in% c(0,1))]<-"0.5"
+  dataToPlot$DaysBin[which(dataToPlot$Days %in% c(5,6,7,12))]<-"5"
+  dataToPlot$DaysBin[which(dataToPlot$Days %in% c(4,5) & dataToPlot$Status=="Case")]<-"5"
+  dataToPlot$DaysBin[which(dataToPlot$Days %in% c(2,3) & dataToPlot$Status=="Case")]<-"2.5"
+  
+  # color case points by whether they've experienced exacerbation yet
+  if (log==TRUE)
+  {
+    if (any(dataToPlot$Days==-1))
+      ggplot(dataToPlot, aes(x=as.numeric(DaysBin), y=Exp, color=StatusNew))+geom_point()+geom_smooth(method="loess",span=setSpan) + xlab("Days Post-Cold") +ggtitle(modName) + ylab("log2(exp)") + scale_x_continuous(breaks=c(-1:5), labels=c("V0","0","1","2","3","4","5+")) + ylim(range(dataToPlot$Exp)) + theme_bw() + scale_color_manual(values=c(rgb(160/255, 32/255, 240/255),"black"))
+    else
+      ggplot(dataToPlot, aes(x=as.numeric(DaysBin), y=Exp, color=StatusNew))+geom_point()+geom_smooth(method="loess",span=setSpan) + xlab("Days Post-Cold") +ggtitle(modName) + ylab("log2(exp)") + scale_x_continuous(breaks=1:6, labels=c("0","1","2","3","4","5")) + ylim(range(dataToPlot$Exp)) + theme_bw() + scale_color_manual(values=c(rgb(160/255, 32/255, 240/255),"black"))
+  }
+  else
+  {
+    # show expression on original scale
+    if (any(dataToPlot$Days==-1))
+      ggplot(dataToPlot, aes(x=as.numeric(DaysBin), y=2^Exp, color=StatusNew)) + geom_smooth(method="loess",span=setSpan, aes(fill=StatusNew)) + xlab("Days Post-Cold") +ggtitle(modName) + ylab("Normalized Expression") + scale_x_continuous(breaks=c(-1:5), labels=c("V0","0","1","2","3","4","5+")) + theme_bw() + scale_color_manual(values=c(rgb(160/255, 32/255, 240/255),"black")) + scale_fill_manual(values=c(rgb(221/255, 160/255, 221/255),"gray")) + guides(fill=guide_legend(override.aes = list(fill="white",size=1.2)), name="") 
+    else
+      ggplot(dataToPlot, aes(x=as.numeric(DaysBin), y=2^Exp, color=StatusNew))+geom_point()+geom_smooth(method="loess",span=setSpan) + xlab("Days Post-Cold") +ggtitle(modName) + ylab("Normalized Expression") + scale_x_continuous(breaks=1:6, labels=c("0","1","2","3","4","5")) + ylim(0, max(2^dataToPlot$Exp)) + theme_bw() + scale_color_manual(values=c(rgb(160/255, 32/255, 240/255),"black"))
+  }
+}
+
+library(ggplot2)
+g1<-longPlotModPos(modName="epi1", nasalGSvPos, nDesignAllvPos, log=FALSE, points=TRUE)
+g1
+
+remMods<-c("neut0","lymp0","eos0","mac0","epi0","squa0","unma0")
+nasalGSvPos<-nasalGSvPos[-which(rownames(nasalGSvPos) %in% remMods),]
+nasalGSvNeg<-nasalGSvNeg[-which(rownames(nasalGSvNeg) %in% remMods),]
+
+for (i in 1:nrow(nasalGSvPos))
+{
+  curMod<-rownames(nasalGSvPos)[i]
+  png(file=paste(file.path(resultsDir, "nasal_longitudinal_loess_modPlots_allVisits_noPoints_virusPos_span1.5_purple_"),curMod,".png",sep=""), units="in", width=6, height=5, res=300, pointsize=9)
+  g1<-longPlotModPos(modName=curMod,nasalGSvPos, nDesignAllvPos, log=FALSE, setSpan=1.5)
+  print(g1)
+  dev.off()
+#  print(i)
+}
+
+# 1/12/19
+for (i in 1:nrow(nasalGSvPos))
+{
+  curMod<-rownames(nasalGSvPos)[i]
+  svg(file=paste(file.path(resultsDir, "nasal_longitudinal_loess_modPlots_allVisits_noPoints_virusPos_span1.5_purple_svg_"),curMod,".svg",sep=""))
+  g1<-longPlotModPos(modName=curMod,nasalGSvPos, nDesignAllvPos, log=FALSE, setSpan=1.5)
+  print(g1)
+  dev.off()
+#  print(i)
+}
+
+
+# check significance
+library(splines)
+
+# should probably bin days between cold and visit like it is in the plot
+posLoessPvals<-c()
+for (i in 1:nrow(nasalGSvPos))
+{
+  fit1<-lm(nasalGSvPos[i,] ~ bs(nDesignAllvPos$Days.between.Cold.and.Visit, degree=2))
+  fit2<-lm(nasalGSvPos[i,] ~ bs(nDesignAllvPos$Days.between.Cold.and.Visit, degree=2) + nDesignAllvPos$Case.or.Control.Status.Original)
+  posLoessPvals<-c(posLoessPvals, anova(fit2, fit1)$Pr[2])
+}
+posLoessFDR<-p.adjust(posLoessPvals, method="fdr")
+rownames(nasalGSvPos)[which(posLoessFDR < 0.05)]
+# unma11 has FDR = 0.2463242
+
+
+
+# 9/26/18 look for anything that is predictive of outcome showing that Ex- is different from Ex+ in V+
+posLmPvals<-c()
+posLmCoef<-c()
+for (i in 1:nrow(nasalGSvPos))
+{
+  subIndex<-which(nDesignAllvPos$Days.between.Cold.and.Visit <= 3)
+  fit1<-lm(nasalGSvPos[i,subIndex] ~ nDesignAllvPos$Days.between.Cold.and.Visit[subIndex]*nDesignAllvPos$Case.or.Control.Status.Original[subIndex])
+  posLmPvals<-c(posLmPvals, summary(fit1)$coef[4,4])
+  posLmCoef<-c(posLmCoef, summary(fit1)$coef[4,1])
+}
+which(posLmPvals < 0.05)
+which(p.adjust(posLmPvals, method="fdr") < 0.05)
+which(p.adjust(posLmPvals, method="fdr") < 0.15)
+posLmCoef[which(p.adjust(posLmPvals, method="fdr") < 0.15)]
+rownames(nasalGSvPos)[which(p.adjust(posLmPvals, method="fdr") < 0.15)]
+lmRes<-cbind(rownames(nasalGSvPos), posLmPvals, p.adjust(posLmPvals, method="fdr"), posLmCoef)
+colnames(lmRes)<-c("module","pval","FDR","interactionCoefficient")
+write.csv(lmRes, file=file.path(resultsDir, "nasal_longitudinal_loess_modPlots_allVisits_noPoints_virusPos_span1.5_purple_lmResults_for3days_interactionTerm.csv"), row.names=FALSE)
+
+# 9/27/18 remake plots without correcting for cell count
+remIndex<-unique(c(which(is.na(nasalDesign$Nasal.Lymphocyte.Count)), which(is.na(nasalDesign$Nasal.Macrophage.Count)), which(is.na(nasalDesign$Nasal.Eosinophil.Count)), which(is.na(nasalDesign$Nasal.Epithelial.Count)), which(is.na(nasalDesign$Nasal.Squamous.Count)), which(is.na(nasalDesign$libCounts)), which(is.na(nasalDesign$Viral.Type.at.Visit2))))
+length(remIndex) # lost 11 out of 347 samples
+
+# remove batch effect at module level
+nasalGSrbeN<-nasalGS[,-remIndex]
+all(nasalDesignSub$library.sampleId==colnames(nasalGSrbeN))
+
+# now need to split between virus pos/neg
+nasalGSvPosN<-nasalGSrbeN[,match(as.character(nDesignAllvPos$library.sampleId), colnames(nasalGSrbeN))]
+all(colnames(nasalGSvPosN)==nDesignAllvPos$library.sampleId)
+
+nasalGSvNegN<-nasalGSrbeN[,match(as.character(nDesignAllvNeg$library.sampleId), colnames(nasalGSrbeN))]
+all(colnames(nasalGSvNegN)==nDesignAllvNeg$library.sampleId)
+
+remMods<-c("neut0","lymp0","eos0","mac0","epi0","squa0","unma0")
+nasalGSvPosN<-nasalGSvPosN[-which(rownames(nasalGSvPosN) %in% remMods),]
+nasalGSvNegN<-nasalGSvNegN[-which(rownames(nasalGSvNegN) %in% remMods),]
+
+for (i in 1:nrow(nasalGSvPosN))
+{
+  curMod<-rownames(nasalGSvPosN)[i]
+  png(file=paste(file.path(resultsDir, "nasal_longitudinal_loess_modPlots_allVisits_noPoints_virusPos_span1.5_purple_notCorrectedForCellCount_"),curMod,".png",sep=""), units="in", width=6, height=5, res=300, pointsize=9)
+  g1<-longPlotModPos(modName=curMod,nasalGSvPosN, nDesignAllvPos, log=FALSE, setSpan=1.5)
+  print(g1)
+  dev.off()
+#  print(i)
+}
+
+
+
+
+
+nDesignAllvPos$DaysBin<-as.character(nDesignAllvPos$Days.between.Cold.and.Visit)
+nDesignAllvPos$DaysBin[which(nDesignAllvPos$Days.between.Cold.and.Visit %in% c(0,1))]<-"0.5"
+nDesignAllvPos$DaysBin[which(nDesignAllvPos$Days.between.Cold.and.Visit %in% c(5,6,7,12))]<-"5"
+nDesignAllvPos$DaysBin[which(nDesignAllvPos$Days.between.Cold.and.Visit %in% c(4,5) & nDesignAllvPos$Case.or.Control.Status.Original=="Case")]<-"5"
+nDesignAllvPos$DaysBin[which(nDesignAllvPos$Days.between.Cold.and.Visit %in% c(2,3) & nDesignAllvPos$Case.or.Control.Status.Original=="Case")]<-"2.5"
+table(nDesignAllvPos$DaysBin)
+nDesignAllvPos$DaysBin<-as.numeric(nDesignAllvPos$DaysBin)
+
+posLoessPvals2<-c()
+for (i in 1:nrow(nasalGSvPos))
+{
+  fit1<-lm(nasalGSvPos[i,] ~ bs(nDesignAllvPos$DaysBin, degree=2))
+  fit2<-lm(nasalGSvPos[i,] ~ bs(nDesignAllvPos$DaysBin, degree=2) + nDesignAllvPos$Case.or.Control.Status.Original)
+  posLoessPvals2<-c(posLoessPvals2, anova(fit2, fit1)$Pr[2])
+}
+posLoessFDR2<-p.adjust(posLoessPvals2, method="fdr")
+rownames(nasalGSvPos)[which(posLoessFDR2 < 0.05)]
+# unma11 has FDR = 0.195209
+# write to file
+virusPosStat<-as.data.frame(cbind(rownames(nasalGSvPos), posLoessPvals2, posLoessFDR2))
+colnames(virusPosStat)<-c("module","pval","FDR")
+write.csv(virusPosStat, file=file.path(resultsDir, "nasal_longitudinal_loess_modPlots_allVisits_noPoints_virusPos_span1.5_purple_module_Significance_for_Case_V_Control_inVirusPos_Fig4B.csv"), row.names=FALSE)
+
+
+longPlotModNeg<-function(modName="eos3", nasalGS, nasalDesign, log=TRUE, points=TRUE, setSpan=1.5)
+{
+  dataToPlot<-as.data.frame(cbind(as.vector(as.matrix(nasalGS[which(rownames(nasalGS)==modName),])), as.character(nasalDesign$Case.or.Control.Status.Original), nasalDesign$Days.between.Cold.and.Visit, nasalDesign$Days.between.Cold.and.Exacerbation, as.character(nasalDesign$Visit), nasalDesign$Days.between.Visit.and.CSteroid.Use))
+  dim(dataToPlot)
+  colnames(dataToPlot)<-c("Exp","Status","Days","DaysBetweenColdExac","Visit","DaysBetweenVisitAndCS")
+  dataToPlot$Exp<-as.numeric(as.character(dataToPlot$Exp))
+  dataToPlot$Days<-as.numeric(as.character(dataToPlot$Days))
+  dataToPlot$Status<-factor(as.character(dataToPlot$Status), levels=c("Control","Case"))
+  dataToPlot$DaysBetweenColdExac<-as.numeric(as.character(dataToPlot$DaysBetweenColdExac))
+  dataToPlot$Visit<-as.character(dataToPlot$Visit)
+  dataToPlot$DaysBetweenVisitAndCS<-as.numeric(as.character(dataToPlot$DaysBetweenVisitAndCS))
+
+  dataToPlot$ExacYet<-"N"
+  dataToPlot$ExacYet[dataToPlot$Days > dataToPlot$DaysBetweenColdExac]<-"Y"
+  table(dataToPlot$Status, dataToPlot$ExacYet)
+  dataToPlot$StatusNew<-as.character(dataToPlot$Status)
+  dataToPlot$StatusNew[which(dataToPlot$Status=="Case" & dataToPlot$ExacYet=="Y")]<-"Case on CSteroid"
+  table(dataToPlot$StatusNew)
+  
+  # bin different days post-cold
+  # combine days 0 and 1 for both
+  # combine days 5, 6, 7, and 12 for controls
+  # combine days 4 and 5 for cases
+  dataToPlot$DaysBin<-as.character(dataToPlot$Days)
+  dataToPlot$DaysBin[which(dataToPlot$Days %in% c(0,1))]<-"0.5"
+  dataToPlot$DaysBin[which(dataToPlot$Days %in% c(5,6,7,12))]<-"5"
+  dataToPlot$DaysBin[which(dataToPlot$Days %in% c(4,5) & dataToPlot$Status=="Case")]<-"5"
+  dataToPlot$DaysBin[which(dataToPlot$Days %in% c(0,1,2) & dataToPlot$Status=="Case")]<-"1"
+  
+  # color case points by whether they've experienced exacerbation yet
+  if (log==TRUE)
+  {
+    if (any(dataToPlot$Days==-1))
+      ggplot(dataToPlot, aes(x=as.numeric(DaysBin), y=Exp, color=StatusNew))+geom_point()+geom_smooth(method="loess",span=setSpan) + xlab("Days Post-Cold") +ggtitle(modName) + ylab("log2(exp)") + scale_x_continuous(breaks=c(-1:5), labels=c("V0","0","1","2","3","4","5+")) + ylim(range(dataToPlot$Exp)) + theme_bw() + scale_color_manual(values=c("red","black"))
+    else
+      ggplot(dataToPlot, aes(x=as.numeric(DaysBin), y=Exp, color=StatusNew))+geom_point()+geom_smooth(method="loess",span=setSpan) + xlab("Days Post-Cold") +ggtitle(modName) + ylab("log2(exp)") + scale_x_continuous(breaks=1:6, labels=c("0","1","2","3","4","5")) + ylim(range(dataToPlot$Exp)) + theme_bw() + scale_color_manual(values=c("red","black"))
+  }
+  else
+  {
+    # show expression on original scale
+    if (any(dataToPlot$Days==-1))
+      ggplot(dataToPlot, aes(x=as.numeric(DaysBin), y=2^Exp, color=StatusNew)) + geom_smooth(method="loess",span=setSpan, aes(fill=StatusNew)) + xlab("Days Post-Cold") +ggtitle(modName) + ylab("Normalized Expression") + scale_x_continuous(breaks=c(-1:5), labels=c("V0","0","1","2","3","4","5+")) + theme_bw() + scale_color_manual(values=c("red","black")) + scale_fill_manual(values=c("pink","gray")) + guides(fill=guide_legend(override.aes = list(fill="white",size=1.2)))
+    else
+      ggplot(dataToPlot, aes(x=as.numeric(DaysBin), y=2^Exp, color=StatusNew))+geom_point()+geom_smooth(method="loess",span=setSpan) + xlab("Days Post-Cold") +ggtitle(modName) + ylab("Normalized Expression") + scale_x_continuous(breaks=1:6, labels=c("0","1","2","3","4","5")) + ylim(0, max(2^dataToPlot$Exp)) + theme_bw() + scale_color_manual(values=c("red","black"))
+  }
+}
+
+
+
+for (i in 1:nrow(nasalGSvNeg))
+{
+  curMod<-rownames(nasalGSvNeg)[i]
+  png(file=paste(file.path(resultsDir, "nasal_longitudinal_loess_modPlots_allVisits_noPoints_virusNeg_span1.5_"),curMod,".png",sep=""), units="in", width=6, height=5, res=300, pointsize=9)
+#  g1<-longPlotModPos(modName=curMod,nasalGSvNeg, nDesignAllvNeg, log=FALSE, setSpan=1.5)
+  g1<-longPlotModNeg(modName=curMod,nasalGSvNeg, nDesignAllvNeg, log=FALSE, setSpan=1.5)
+  print(g1)
+  dev.off()
+#  print(i)
+}
+
+for (i in 1:nrow(nasalGSvNegN))
+{
+  curMod<-rownames(nasalGSvNegN)[i]
+  png(file=paste(file.path(resultsDir, "nasal_longitudinal_loess_modPlots_allVisits_noPoints_virusNeg_span1.5_notCorrectedForCellCount_"),curMod,".png",sep=""), units="in", width=6, height=5, res=300, pointsize=9)
+#  g1<-longPlotModPos(modName=curMod,nasalGSvNegN, nDesignAllvNeg, log=FALSE, setSpan=1.5)
+  g1<-longPlotModNeg(modName=curMod,nasalGSvNegN, nDesignAllvNeg, log=FALSE, setSpan=1.5)
+  print(g1)
+  dev.off()
+#  print(i)
+}
+
+# make a few specifically with limits
+#png(file=paste(file.path(resultsDir, "nasal_longitudinal_loess_modPlots_allVisits_noPoints_"),"epi1",".png",sep=""), units="in", width=6, height=5, res=300, pointsize=9)
+#g1<-longPlotMod(modName="epi1", nasalGSrbe, nasalDesignSub, log=FALSE, points=TRUE)
+#g1+ coord_cartesian(ylim = c(0,3.5))
+#dev.off()
+
+
+# should probably bin days between cold and visit like it is in the plot
+library(splines)
+negLoessPvals<-c()
+for (i in 1:nrow(nasalGSvNeg))
+{
+  fit1<-lm(nasalGSvNeg[i,] ~ bs(nDesignAllvNeg$Days.between.Cold.and.Visit, degree=2))
+  fit2<-lm(nasalGSvNeg[i,] ~ bs(nDesignAllvNeg$Days.between.Cold.and.Visit, degree=2) + nDesignAllvNeg$Case.or.Control.Status.Original)
+  negLoessPvals<-c(negLoessPvals, anova(fit2, fit1)$Pr[2])
+}
+negLoessFDR<-p.adjust(negLoessPvals, method="fdr")
+rownames(nasalGSvNeg)[which(negLoessFDR < 0.05)]
+rownames(nasalGSvNeg)[which(negLoessPvals < 0.05)] # only 2
+
+nDesignAllvNeg$DaysBin<-as.character(nDesignAllvNeg$Days.between.Cold.and.Visit)
+nDesignAllvNeg$DaysBin[which(nDesignAllvNeg$Days.between.Cold.and.Visit %in% c(0,1))]<-"0.5"
+nDesignAllvNeg$DaysBin[which(nDesignAllvNeg$Days.between.Cold.and.Visit %in% c(5,6,7,12))]<-"5"
+nDesignAllvNeg$DaysBin[which(nDesignAllvNeg$Days.between.Cold.and.Visit %in% c(4,5) & nDesignAllvNeg$Case.or.Control.Status.Original=="Case")]<-"5"
+nDesignAllvNeg$DaysBin[which(nDesignAllvNeg$Days.between.Cold.and.Visit %in% c(0,1,2) & nDesignAllvNeg$Case.or.Control.Status.Original=="Case")]<-"1"
+nDesignAllvNeg$DaysBin<-as.numeric(nDesignAllvNeg$DaysBin)
+
+negLoessPvals2<-c()
+for (i in 1:nrow(nasalGSvNeg))
+{
+  fit1<-lm(nasalGSvNeg[i,] ~ bs(nDesignAllvNeg$DaysBin, degree=2))
+  fit2<-lm(nasalGSvNeg[i,] ~ bs(nDesignAllvNeg$DaysBin, degree=2) + nDesignAllvNeg$Case.or.Control.Status.Original)
+  negLoessPvals2<-c(negLoessPvals2, anova(fit2, fit1)$Pr[2])
+}
+negLoessFDR2<-p.adjust(negLoessPvals2, method="fdr")
+rownames(nasalGSvNeg)[which(negLoessFDR2 < 0.05)]
+rownames(nasalGSvNeg)[which(negLoessPvals2 < 0.05)]
+
+# write to file
+virusNegStat<-as.data.frame(cbind(rownames(nasalGSvNeg), negLoessPvals2, negLoessFDR2))
+colnames(virusNegStat)<-c("module","pval","FDR")
+write.csv(virusNegStat, file=file.path(resultsDir, "nasal_longitudinal_loess_modPlots_allVisits_noPoints_virusNeg_span1.5_module_Significance_for_Case_V_Control_inVirusNeg_Fig4B.csv", row.names=FALSE)
+
+```
+
+
