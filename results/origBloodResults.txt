@@ -1,0 +1,8 @@
+> table(allSets[,3])
+
+  eos0   eos1   eos2  lymp0  lymp1  lymp2  lymp3  lymp4  lymp5  lymp6  lymp7  mono0  mono1  mono2  neut0  neut1 
+    15     57     47    172    674    306    214    128     82     70     53      4     77     46    142    748 
+ neut2  neut3  neut4  neut5  unma0  unma1 unma10 unma11 unma12 unma13 unma14 unma15 unma16 unma17 unma18 unma19 
+   544    454     92     89   2671   2122    177    174    154    138    132    121     96     84     82     71 
+ unma2 unma20 unma21 unma22 unma23 unma24 unma25 unma26  unma3  unma4  unma5  unma6  unma7  unma8  unma9 
+  1177     63     55     53     53     51     51     48    315    271    268    263    263    207    200 
