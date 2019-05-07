@@ -41,9 +41,9 @@ dim(bloodGEO)
 table(unlist(lapply(strsplit(colnames(bloodGEO), "_"), function(x) {x[[2]]})))
 
 # read in meta data
-bloodData<-read.csv(file=file.path(dataDir, "MUPPITS1_updated_blood_metadata_GEO.csv"), skip=43)
+bloodData<-read.csv(file=file.path(dataDir, "MUPPITS1_update3_blood_metadata_GEO.csv"), skip=43)
 # subset to actual data
-bloodData<-bloodData[1:511, ] # keep rows for 500 libraries and keep columns up until raw.file
+bloodData<-bloodData[1:511, ] # keep rows for 511 libraries and keep columns up until raw.file
 
 all(colnames(bloodGEO)==bloodData$Sample.Name)
 # need to rearrange

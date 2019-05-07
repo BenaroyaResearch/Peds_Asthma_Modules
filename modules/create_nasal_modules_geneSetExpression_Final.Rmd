@@ -45,7 +45,7 @@ dim(nasalGEO)
 table(unlist(lapply(strsplit(colnames(nasalGEO), "_"), function(x) {x[[2]]})))
 
 # read in meta data
-nasalData<-read.csv(file=file.path(dataDir, "MUPPITS1_update2_nasal_metadata_GEO.csv"), skip=43)
+nasalData<-read.csv(file=file.path(dataDir, "MUPPITS1_update3_nasal_metadata_GEO.csv"), skip=43)
 # subset to actual data
 nasalData<-nasalData[1:523, 1:44] # keep rows for 523 libraries and keep columns up until raw.file
 
